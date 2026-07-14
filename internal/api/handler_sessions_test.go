@@ -2573,6 +2573,69 @@ func TestHandleSessionCreateProviderReturns202WithRequestID(t *testing.T) {
 	}
 }
 
+func TestHandleSessionCreateProviderRejectsWorkDirOverride(t *testing.T) {
+	tests := []struct {
+		name    string
+		workDir string
+	}{
+		{name: "existing absolute directory", workDir: t.TempDir()},
+		{name: "relative directory", workDir: "relative/worktree"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fs := newSessionFakeState(t)
+			srv := New(fs)
+			h := newTestCityHandlerWith(t, fs, srv)
+
+			body := fmt.Sprintf(
+				`{"kind":"provider","name":"test-agent","work_dir":%q}`,
+				tt.workDir,
+			)
+			req := newPostRequest(cityURL(fs, "/sessions"), strings.NewReader(body))
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+
+			if rec.Code == http.StatusAccepted {
+				accepted := decodeAsyncAccepted(t, rec.Body)
+				if success, failure := waitForSessionCreateResult(t, fs.eventProv, accepted.RequestID); success == nil {
+					t.Fatalf("unexpected provider create failure: %s: %s", failure.ErrorCode, failure.ErrorMessage)
+				}
+			}
+			if rec.Code != http.StatusUnprocessableEntity {
+				t.Errorf("status = %d, want %d; body: %s", rec.Code, http.StatusUnprocessableEntity, rec.Body.String())
+			} else {
+				if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, "application/problem+json") {
+					t.Errorf("Content-Type = %q, want application/problem+json", got)
+				}
+				var problem struct {
+					Status int    `json:"status"`
+					Detail string `json:"detail"`
+				}
+				if err := json.NewDecoder(rec.Body).Decode(&problem); err != nil {
+					t.Fatalf("decode problem details: %v", err)
+				}
+				if problem.Status != http.StatusUnprocessableEntity {
+					t.Errorf("problem.status = %d, want %d", problem.Status, http.StatusUnprocessableEntity)
+				}
+				if !strings.Contains(problem.Detail, "configured agent sessions") {
+					t.Errorf("problem.detail = %q, want configured-agent-only guidance", problem.Detail)
+				}
+			}
+
+			startCalls := 0
+			for _, call := range fs.sp.SnapshotCalls() {
+				if call.Method == "Start" {
+					startCalls++
+				}
+			}
+			if startCalls != 0 {
+				t.Errorf("provider Start calls = %d, want 0", startCalls)
+			}
+		})
+	}
+}
+
 func TestHandleSessionCreateAsync(t *testing.T) {
 	fs := newSessionFakeState(t)
 	srv := New(fs)

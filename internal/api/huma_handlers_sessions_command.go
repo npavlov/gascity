@@ -55,6 +55,9 @@ func (s *Server) humaHandleSessionCreate(ctx context.Context, input *SessionCrea
 	}
 
 	if kind == "provider" {
+		if strings.TrimSpace(body.WorkDir) != "" {
+			return nil, huma.Error422UnprocessableEntity("work_dir is only supported for configured agent sessions")
+		}
 		return s.humaCreateProviderSession(ctx, store, body, name)
 	}
 

@@ -3966,7 +3966,7 @@ export interface components {
             session_name?: string;
             /** @description Session title. */
             title?: string;
-            /** @description Existing absolute working directory for the session. */
+            /** @description Existing absolute working directory for configured agent sessions only. */
             work_dir?: string;
         };
         SessionCreateSucceededPayload: {

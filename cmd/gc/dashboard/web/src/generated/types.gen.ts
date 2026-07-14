@@ -2588,7 +2588,7 @@ export type SessionCreateBody = {
      */
     title?: string;
     /**
-     * Existing absolute working directory for the session.
+     * Existing absolute working directory for configured agent sessions only.
      */
     work_dir?: string;
 };

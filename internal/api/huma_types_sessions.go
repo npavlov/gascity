@@ -66,7 +66,7 @@ type sessionCreateBody struct {
 	Options           map[string]string `json:"options,omitempty" doc:"Provider/agent option overrides."`
 	ProjectID         string            `json:"project_id,omitempty" doc:"Opaque project context identifier."`
 	Title             string            `json:"title,omitempty" doc:"Session title."`
-	WorkDir           string            `json:"work_dir,omitempty" doc:"Existing absolute working directory for the session."`
+	WorkDir           string            `json:"work_dir,omitempty" doc:"Existing absolute working directory for configured agent sessions only."`
 }
 
 // SessionCreateInput is the Huma input for POST /v0/city/{cityName}/sessions.

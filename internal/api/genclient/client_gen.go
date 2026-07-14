@@ -2594,7 +2594,7 @@ type SessionCreateBody struct {
 	// Title Session title.
 	Title *string `json:"title,omitempty"`
 
-	// WorkDir Existing absolute working directory for the session.
+	// WorkDir Existing absolute working directory for configured agent sessions only.
 	WorkDir *string `json:"work_dir,omitempty"`
 }
 

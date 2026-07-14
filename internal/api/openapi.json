@@ -6288,7 +6288,7 @@
             "type": "string"
           },
           "work_dir": {
-            "description": "Existing absolute working directory for the session.",
+            "description": "Existing absolute working directory for configured agent sessions only.",
             "type": "string"
           }
         },
