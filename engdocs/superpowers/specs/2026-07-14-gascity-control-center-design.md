@@ -1,6 +1,6 @@
 # GasCity Control Center Design
 
-**Status:** Approved design, pending written-spec review
+**Status:** Approved for implementation planning
 
 **Target repository:** `/Volumes/DATA/repos/personal/gascity`
 
