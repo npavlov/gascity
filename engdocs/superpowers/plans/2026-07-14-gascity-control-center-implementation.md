@@ -280,17 +280,22 @@ git push
 - Create: `cmd/gc-control/main.go`
 - Create: `cmd/gc-control/embed.go`
 - Create: `cmd/gc-control/main_test.go`
+- Generate: `cmd/gc-control/testenv_import_test.go`
 - Create: `internal/controlcenter/config.go`
 - Create: `internal/controlcenter/config_test.go`
 - Create: `internal/controlcenter/app.go`
 - Create: `internal/controlcenter/app_test.go`
+- Generate: `internal/controlcenter/testenv_import_test.go`
 - Create: `internal/controlcenter/api/server.go`
 - Create: `internal/controlcenter/api/health.go`
 - Create: `internal/controlcenter/api/health_test.go`
+- Create: `internal/controlcenter/api/openapi_sync_test.go`
+- Generate: `internal/controlcenter/api/testenv_import_test.go`
 - Create: `cmd/gencontrolspec/main.go`
 - Generate: `internal/controlcenter/openapi.json`
-- Create: `cmd/gc-control/web/{package.json,package-lock.json,tsconfig.json,vite.config.ts,index.html}`
-- Create: `cmd/gc-control/web/src/{main.tsx,app/App.tsx,app/App.test.tsx,lib/api.ts,styles/global.css}`
+- Create: `cmd/gc-control/web/{.gitignore,package.json,package-lock.json,tsconfig.json,vite.config.ts,openapi-ts.config.ts,index.html}`
+- Create: `cmd/gc-control/web/src/{main.tsx,vite-env.d.ts,app/App.tsx,app/App.test.tsx,lib/api.ts,test/setup.ts,styles/global.css}`
+- Generate and commit: `cmd/gc-control/web/dist/*`
 - Modify: `Makefile`
 
 - [ ] **Step 1: Add failing configuration tests.**
@@ -313,7 +318,9 @@ type Config struct {
 Tests must accept `127.0.0.1:0`, default `NativeTerminalApp` to `Terminal`,
 require city/pack/Mayor-identity/assistant values, validate the Supervisor URL,
 resolve a blank `GCExecutable` with `exec.LookPath("gc")`, and reject
-`0.0.0.0`, LAN IPs, or a hostname resolving beyond loopback.
+`localhost`, IPv6, `0.0.0.0`, LAN IPs, and all other hosts. Normalize only the
+literal `127.0.0.1:<numeric-port>` contract, and inject path/address resolvers
+in tests so DNS and PATH never depend on the developer machine.
 
 ```bash
 go test ./internal/controlcenter -run 'TestConfig' -count=1
@@ -341,22 +348,29 @@ Assert `GET /api/v1/health` returns:
 ```
 
 Assert unknown SPA routes return embedded `index.html`, while unknown `/api/`,
-`/ws/`, and `/openapi.json/child` routes return 404.
+`/ws/`, `/assets/`, and `/openapi.json/child` routes return 404. Add a Host
+allowlist test: requests whose `Host` is not literal `127.0.0.1` with an
+optional numeric port are rejected before reaching the application. Add an
+OpenAPI sync test that compares the live registered document with the committed
+`internal/controlcenter/openapi.json`.
 
 - [ ] **Step 3: Implement the minimal Huma server and graceful runner.**
 
-Use `humago.New` with `huma.DefaultConfig`, clear `SchemasPath`, register
-versioned operations under `/api/v1`, and expose the same API's OpenAPI document
-at `/openapi.json`. `App.Run` must use an `http.Server`, shut down on context
-cancellation, and return non-`http.ErrServerClosed` failures with operation
-context.
+Use `humago.New` with `huma.DefaultConfig`; clear `SchemasPath` and `DocsPath`
+and set `CreateHooks=nil`. Register versioned operations under `/api/v1` and
+expose the same API's OpenAPI document at `/openapi.json`. `App.Run` must use an
+`http.Server`, shut down with a bounded fresh background context after run
+context cancellation, and return non-`http.ErrServerClosed` failures with
+operation context.
 
 - [ ] **Step 4: Add a failing React boot test.**
 
 Install and lock React 19, React DOM 19, Vite, Vitest, jsdom, Testing Library,
-`openapi-fetch`, and `openapi-typescript`. Test the loading state, the rendered
-city/health state, and an explicit connection-error state using a mocked typed
-client.
+`openapi-fetch`, `openapi-typescript`, `@hey-api/openapi-ts`, and
+`@hey-api/client-fetch` on the repository's Vite 6/Vitest 4 toolchain. Include
+the React Vite plugin, React type packages, jsdom setup, and the repository Node
+engine range. Test the loading state, the rendered city/health state, and an
+explicit connection-error state using a mocked typed client.
 
 ```tsx
 render(<App api={fakeAPI({ city: "taxdome", supervisor_reachable: true })} />);
@@ -372,26 +386,34 @@ cd cmd/gc-control/web && npm test -- --run src/app/App.test.tsx
 
 - [ ] **Step 5: Implement the shell and typed client generation.**
 
-`cmd/gencontrolspec` writes a stable, formatted
-`internal/controlcenter/openapi.json`. The frontend `gen` script reads
-`../../../internal/controlcenter/openapi.json`; Vite development proxies
-`/api`, `/ws`, and `/openapi.json` to the Go address. Do not expose filesystem
-paths or command configuration in an HTML bootstrap object.
+`cmd/gencontrolspec` registers the API on a fresh mux with a no-op Supervisor
+ping and writes a stable, formatted `internal/controlcenter/openapi.json`; it
+must not require valid runtime config, static assets, `gc`, or a live
+Supervisor. The frontend `gen` script reads
+`../../../internal/controlcenter/openapi.json` and generates typed REST plus SSE
+clients; Vite development proxies `/api`, `/ws`, and `/openapi.json` to the Go
+address. Do not expose filesystem paths, Mayor identity, or command
+configuration in an HTML bootstrap object. Run
+`go run scripts/add-testenv-import.go` for every new tested Go package.
 
 - [ ] **Step 6: Add build targets and verify a single embedded binary.**
 
-Add:
+Add the targets to `.PHONY`, extend `clean` for `bin/gc-control`, keep `dist/`
+tracked so a clean Go checkout compiles, and add:
 
 ```make
-control-center-gen:
+control-center-web-install:
+	cd cmd/gc-control/web && npm ci --silent
+
+control-center-gen: control-center-web-install
 	go run ./cmd/gencontrolspec
 	cd cmd/gc-control/web && npm run gen
 
 control-center-build: control-center-gen
-	cd cmd/gc-control/web && npm ci --silent && npm run build
-	go build ./cmd/gc-control
+	cd cmd/gc-control/web && npm run build
+	go build -o $(BUILD_DIR)/gc-control ./cmd/gc-control
 
-control-center-test:
+control-center-test: control-center-gen
 	$(TEST_ENV) go test ./internal/controlcenter/... ./cmd/gc-control/...
 	cd cmd/gc-control/web && npm test
 
@@ -403,6 +425,7 @@ Run:
 
 ```bash
 make control-center-check
+go test ./internal/testenv -run TestRequiresDedicatedTestenvImportFile -count=1
 git diff --exit-code --check
 ```
 
