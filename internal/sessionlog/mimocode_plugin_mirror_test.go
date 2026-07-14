@@ -1,6 +1,7 @@
 package sessionlog
 
 import (
+	"fmt"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -19,6 +20,22 @@ const mimoCodePluginPackPath = "overlay/per-provider/mimocode/.mimocode/plugin/g
 // mimoCodeMirrorSegments is the home-relative mirror directory shared by the
 // plugin's default transcript mirror and DefaultMimoCodeSearchPaths.
 var mimoCodeMirrorSegments = []string{".local", "share", "gascity", "mimocode-transcripts"}
+
+func resolveNodeExecutable(nodeOnPath string) (string, error) {
+	out, err := exec.Command(nodeOnPath, "-p", "process.execPath").CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("query node executable through %q: %w (output: %s)", nodeOnPath, err, strings.TrimSpace(string(out)))
+	}
+
+	nodeBin := strings.TrimSpace(string(out))
+	if !filepath.IsAbs(nodeBin) {
+		return "", fmt.Errorf("node process.execPath returned non-absolute path %q", nodeBin)
+	}
+	if _, err := exec.LookPath(nodeBin); err != nil {
+		return "", fmt.Errorf("validate node executable %q: %w", nodeBin, err)
+	}
+	return nodeBin, nil
+}
 
 // TestMimoCodePluginDefaultMirrorDirMatchesReaderSearchPath pins the embedded
 // MiMo Code plugin's default transcript mirror directory to the directory
@@ -57,9 +74,13 @@ func TestMimoCodePluginDefaultMirrorDirMatchesReaderSearchPath(t *testing.T) {
 // DefaultMimoCodeSearchPaths' directory, FindMimoCodeSessionFile finds it for
 // the session's work directory, and ReadMimoCodeFile parses it.
 func TestMimoCodePluginMirrorsTranscriptByDefault(t *testing.T) {
-	nodeBin, err := exec.LookPath("node")
+	nodeOnPath, err := exec.LookPath("node")
 	if err != nil {
 		t.Skip("node not installed; cannot execute the MiMo Code plugin")
+	}
+	nodeBin, err := resolveNodeExecutable(nodeOnPath)
+	if err != nil {
+		t.Fatalf("resolve real node executable: %v", err)
 	}
 
 	plugin, err := fs.ReadFile(core.PackFS, mimoCodePluginPackPath)
@@ -158,5 +179,61 @@ await hooks.event({ event: { type: "session.idle", properties: { sessionID } } }
 	}
 	if len(sess.Messages) != 1 || sess.Messages[0].TextContent() != "hello default mirror" {
 		t.Fatalf("mirrored messages = %+v, want one user message %q", sess.Messages, "hello default mirror")
+	}
+}
+
+func TestResolveNodeExecutableBypassesHomeDependentShim(t *testing.T) {
+	lookupHome := t.TempDir()
+	hermeticHome := t.TempDir()
+	binDir := t.TempDir()
+	realNode := filepath.Join(binDir, "real-node")
+	if err := os.WriteFile(realNode, []byte("#!/bin/sh\nprintf 'real-node\\n'\n"), 0o755); err != nil {
+		t.Fatalf("write real node fixture: %v", err)
+	}
+
+	shimDir := t.TempDir()
+	shim := filepath.Join(shimDir, "node")
+	shimScript := `#!/bin/sh
+if [ "$HOME" != "$TEST_NODE_LOOKUP_HOME" ]; then
+  echo "node shim requires its original HOME" >&2
+  exit 70
+fi
+if [ "$1" != "-p" ] || [ "$2" != "process.execPath" ]; then
+  echo "node shim only supports executable discovery" >&2
+  exit 71
+fi
+printf '%s\n' "$TEST_REAL_NODE"
+`
+	if err := os.WriteFile(shim, []byte(shimScript), 0o755); err != nil {
+		t.Fatalf("write node shim fixture: %v", err)
+	}
+
+	t.Setenv("HOME", lookupHome)
+	t.Setenv("PATH", shimDir)
+	t.Setenv("TEST_NODE_LOOKUP_HOME", lookupHome)
+	t.Setenv("TEST_REAL_NODE", realNode)
+
+	nodeOnPath, err := exec.LookPath("node")
+	if err != nil {
+		t.Fatalf("look up node shim: %v", err)
+	}
+	resolved, err := resolveNodeExecutable(nodeOnPath)
+	if err != nil {
+		t.Fatalf("resolve node executable: %v", err)
+	}
+	cmd := exec.Command(resolved)
+	cmd.Env = []string{
+		"HOME=" + hermeticHome,
+		"PATH=" + shimDir,
+	}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("resolved node executable %q cannot run with hermetic HOME: %v\noutput:\n%s", resolved, err, out)
+	}
+	if resolved != realNode {
+		t.Fatalf("resolveNodeExecutable() = %q, want real executable %q", resolved, realNode)
+	}
+	if got := strings.TrimSpace(string(out)); got != "real-node" {
+		t.Fatalf("real node fixture output = %q, want %q", got, "real-node")
 	}
 }
