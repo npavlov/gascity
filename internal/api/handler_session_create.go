@@ -132,7 +132,7 @@ func (s *Server) handleSessionCreate(w http.ResponseWriter, r *http.Request) {
 		writeSessionManagerError(w, err)
 		return
 	}
-	createCtx, err := s.resolveAgentCreateContext(template, alias)
+	createCtx, err := s.resolveAgentCreateContext(template, alias, "")
 	if err != nil {
 		s.idem.unreserve(idemKey)
 		writeError(w, http.StatusInternalServerError, "internal", err.Error())

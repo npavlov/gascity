@@ -2145,6 +2145,116 @@ func TestHandleSessionCreate(t *testing.T) {
 	}
 }
 
+func TestHandleSessionCreateWithWorkDir(t *testing.T) {
+	fs := newSessionFakeState(t)
+	srv := New(fs)
+	h := newTestCityHandlerWith(t, fs, srv)
+
+	workDir := t.TempDir()
+	canonicalWorkDir, err := filepath.EvalSymlinks(workDir)
+	if err != nil {
+		t.Fatalf("EvalSymlinks(%q): %v", workDir, err)
+	}
+	link := filepath.Join(t.TempDir(), "worktree")
+	if err := os.Symlink(workDir, link); err != nil {
+		t.Fatalf("Symlink(%q, %q): %v", workDir, link, err)
+	}
+
+	body := fmt.Sprintf(
+		`{"kind":"agent","name":"myrig/worker","alias":"cc-workdir","work_dir":%q,"async":true}`,
+		link,
+	)
+	req := newPostRequest(cityURL(fs, "/sessions"), strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("create status = %d, want %d; body: %s", rec.Code, http.StatusAccepted, rec.Body.String())
+	}
+	accepted := decodeAsyncAccepted(t, rec.Body)
+	success, failure := waitForSessionCreateResult(t, fs.eventProv, accepted.RequestID)
+	if success == nil {
+		t.Fatalf("session create failed: %s: %s", failure.ErrorCode, failure.ErrorMessage)
+	}
+
+	bead, err := fs.cityBeadStore.Get(success.Session.ID)
+	if err != nil {
+		t.Fatalf("Get(%q): %v", success.Session.ID, err)
+	}
+	if got := bead.Metadata["work_dir"]; got != canonicalWorkDir {
+		t.Fatalf("persisted work_dir = %q, want %q", got, canonicalWorkDir)
+	}
+
+	getReq := httptest.NewRequest("GET", cityURL(fs, "/session/")+success.Session.ID, nil)
+	getRec := httptest.NewRecorder()
+	h.ServeHTTP(getRec, getReq)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("get status = %d, want %d; body: %s", getRec.Code, http.StatusOK, getRec.Body.String())
+	}
+	var got struct {
+		WorkDir string `json:"work_dir"`
+	}
+	if err := json.NewDecoder(getRec.Body).Decode(&got); err != nil {
+		t.Fatalf("decode session get: %v", err)
+	}
+	if got.WorkDir != canonicalWorkDir {
+		t.Fatalf("GET work_dir = %q, want %q", got.WorkDir, canonicalWorkDir)
+	}
+}
+
+func TestHandleSessionCreateRejectsInvalidWorkDir(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(file, []byte("test"), 0o600); err != nil {
+		t.Fatalf("WriteFile(%q): %v", file, err)
+	}
+	missing := filepath.Join(t.TempDir(), "missing")
+
+	tests := []struct {
+		name        string
+		workDir     string
+		wantErrPart string
+	}{
+		{name: "relative", workDir: "relative/worktree", wantErrPart: "absolute"},
+		{name: "missing", workDir: missing, wantErrPart: "resolving requested session work directory"},
+		{name: "regular file", workDir: file, wantErrPart: "not a directory"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fs := newSessionFakeState(t)
+			srv := New(fs)
+			h := newTestCityHandlerWith(t, fs, srv)
+			body := fmt.Sprintf(
+				`{"kind":"agent","name":"myrig/worker","work_dir":%q,"async":true}`,
+				tt.workDir,
+			)
+			req := newPostRequest(cityURL(fs, "/sessions"), strings.NewReader(body))
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusUnprocessableEntity {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusUnprocessableEntity, rec.Body.String())
+			}
+			if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, "application/problem+json") {
+				t.Fatalf("Content-Type = %q, want application/problem+json", got)
+			}
+			var problem struct {
+				Status int    `json:"status"`
+				Detail string `json:"detail"`
+			}
+			if err := json.NewDecoder(rec.Body).Decode(&problem); err != nil {
+				t.Fatalf("decode problem details: %v", err)
+			}
+			if problem.Status != http.StatusUnprocessableEntity {
+				t.Fatalf("problem.status = %d, want %d", problem.Status, http.StatusUnprocessableEntity)
+			}
+			if !strings.Contains(problem.Detail, tt.wantErrPart) {
+				t.Fatalf("problem.detail = %q, want containing %q", problem.Detail, tt.wantErrPart)
+			}
+		})
+	}
+}
+
 func TestHandleSessionCreateUsesACPTransportCommandForAgentTemplate(t *testing.T) {
 	supportsACP := true
 	fs := newSessionFakeState(t)
@@ -2714,7 +2824,7 @@ args = ["{{.AgentName}}", "{{.WorkDir}}", "{{.TemplateName}}"]
 	}
 
 	srv := New(fs)
-	createCtx, err := srv.resolveAgentCreateContext("myrig/ant", "")
+	createCtx, err := srv.resolveAgentCreateContext("myrig/ant", "", "")
 	if err != nil {
 		t.Fatalf("resolveAgentCreateContext: %v", err)
 	}

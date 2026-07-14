@@ -6286,6 +6286,10 @@
           "title": {
             "description": "Session title.",
             "type": "string"
+          },
+          "work_dir": {
+            "description": "Existing absolute working directory for the session.",
+            "type": "string"
           }
         },
         "type": "object"
@@ -6643,6 +6647,9 @@
             "type": "string"
           },
           "title": {
+            "type": "string"
+          },
+          "work_dir": {
             "type": "string"
           }
         },

@@ -2587,6 +2587,10 @@ export type SessionCreateBody = {
      * Session title.
      */
     title?: string;
+    /**
+     * Existing absolute working directory for the session.
+     */
+    work_dir?: string;
 };
 
 export type SessionCreateSucceededPayload = {
@@ -2771,6 +2775,7 @@ export type SessionResponse = {
     submission_capabilities?: SubmissionCapabilities;
     template: string;
     title: string;
+    work_dir?: string;
 };
 
 export type SessionStrandedPayload = {

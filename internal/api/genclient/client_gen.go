@@ -2593,6 +2593,9 @@ type SessionCreateBody struct {
 
 	// Title Session title.
 	Title *string `json:"title,omitempty"`
+
+	// WorkDir Existing absolute working directory for the session.
+	WorkDir *string `json:"work_dir,omitempty"`
 }
 
 // SessionCreateSucceededPayload defines model for SessionCreateSucceededPayload.
@@ -2746,6 +2749,7 @@ type SessionResponse struct {
 	SubmissionCapabilities *SubmissionCapabilities `json:"submission_capabilities,omitempty"`
 	Template               string                  `json:"template"`
 	Title                  string                  `json:"title"`
+	WorkDir                *string                 `json:"work_dir,omitempty"`
 }
 
 // SessionStrandedPayload defines model for SessionStrandedPayload.

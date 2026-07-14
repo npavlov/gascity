@@ -96,8 +96,11 @@ func (s *Server) humaHandleSessionCreate(ctx context.Context, input *SessionCrea
 	if cfg == nil {
 		return nil, huma.Error500InternalServerError("no city config loaded")
 	}
-	createCtx, err := s.resolveAgentCreateContext(template, alias)
+	createCtx, err := s.resolveAgentCreateContext(template, alias, body.WorkDir)
 	if err != nil {
+		if errors.Is(err, errInvalidRequestedSessionWorkDir) {
+			return nil, huma.Error422UnprocessableEntity(err.Error())
+		}
 		return nil, huma.Error500InternalServerError(err.Error())
 	}
 	agentCfg := createCtx.Agent

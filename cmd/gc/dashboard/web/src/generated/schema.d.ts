@@ -3966,6 +3966,8 @@ export interface components {
             session_name?: string;
             /** @description Session title. */
             title?: string;
+            /** @description Existing absolute working directory for the session. */
+            work_dir?: string;
         };
         SessionCreateSucceededPayload: {
             /** @description Correlation ID from the 202 response. */
@@ -4095,6 +4097,7 @@ export interface components {
             submission_capabilities?: components["schemas"]["SubmissionCapabilities"];
             template: string;
             title: string;
+            work_dir?: string;
         };
         SessionStrandedPayload: {
             /** @description Canonical session bead ID for the stranded pool session (also the envelope Subject). */
