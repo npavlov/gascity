@@ -128,8 +128,10 @@ Run the new focused test twice with `-count=1`, then run:
 make test-fast-parallel
 ```
 
-Expected: exit 0 with no hung shards. If another independent pre-existing defect
-appears, keep `ga-8mr.12` open and repeat Steps 2-4 before starting Task 1.
+Expected: the causal failure and any runaway descendants are eliminated. If the
+full suite then exposes independent pre-existing defects, record their exact
+tests in a separate Bead that blocks Task 12. Task 1 may start only after the
+operator approves a bounded focused-test exception and `ga-8mr.12` records it.
 
 - [ ] **Step 5: Commit and push the isolated baseline correction.**
 
@@ -140,7 +142,9 @@ git pull --rebase
 git push
 ```
 
-Close `ga-8mr.12` only after the full fast suite exits successfully.
+Close `ga-8mr.12` after the full fast suite exits successfully or after the
+approved focused-test exception is recorded and every residual broad-suite
+failure is tracked as a dependency of final acceptance.
 
 ---
 
