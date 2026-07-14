@@ -1,0 +1,6 @@
+node_modules/
+src/generated/
+*.log
+.vite/
+
+# dist/ is committed because cmd/gc-control embeds it at Go compile time.
