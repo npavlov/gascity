@@ -36,6 +36,8 @@ and pack commands remain the sources of truth.
 - Show the local dirty worktree diff without requiring a commit or MR.
 - Start and stop the selected convoy environment through a pack-owned typed
   command contract.
+- Keep every Control Center screen visually consistent through one internal
+  design system with enforced tokens, components, and composition rules.
 - Work well at 1366x768 and 2560x1440 in light and dark themes.
 
 ## Non-goals for the first release
@@ -49,6 +51,8 @@ and pack commands remain the sources of truth.
 - Implementing MR mutations before their pack commands exist.
 - Storing a second copy of convoy, order, workflow, runtime, or session state.
 - Starting a tmux session when the user only selects or views a convoy.
+- Publishing a reusable npm UI package, migrating the existing dashboard to
+  the new components, or maintaining Storybook or a development UI catalog.
 
 ## Product boundary
 
@@ -60,6 +64,8 @@ The Control Center is a new binary and web application, separate from
 - focused subpackages own Supervisor projection, local Git inspection, jobs,
   terminal management, runtime commands, and assistant integration.
 - `cmd/gc-control/web` contains the React and TypeScript application.
+- `cmd/gc-control/web/src/ui` is the Control Center-only design system and the
+  sole source of shared visual primitives, components, patterns, and tokens.
 
 The existing dashboard remains a reference implementation for Supervisor API
 usage. The new application has a backend because browsers cannot safely own
@@ -71,6 +77,9 @@ application launch, or pack command execution.
 - **Backend:** Go, using the repository's existing Huma and typed OpenAPI
   conventions.
 - **Frontend:** React, TypeScript, and Vite.
+- **Design system:** an internal typed React library under `src/ui`, semantic
+  CSS custom-property tokens, ESLint import and JSX boundaries, and Stylelint
+  value rules. It is not a separately published package.
 - **Browser terminal:** xterm.js over a WebSocket attached to a server-side PTY.
 - **Persistent terminal:** a dedicated tmux socket and one sanitized session
   name per convoy.
@@ -81,6 +90,64 @@ application launch, or pack command execution.
 
 The first release binds only to `127.0.0.1`. A non-loopback bind is rejected.
 Authentication and multi-user isolation are outside this local-only release.
+
+## Internal design system
+
+The Control Center owns one internal visual library:
+
+```text
+cmd/gc-control/web/src/ui/
+├── tokens.css
+├── themes.css
+├── typography.css
+├── icons.ts
+├── primitives/
+├── components/
+├── patterns/
+├── index.ts
+└── README.md
+```
+
+`tokens.css` defines semantic color, spacing, typography, size, radius,
+shadow, motion, and z-index values. `themes.css` supplies light and dark token
+values. Feature code consumes semantic names such as surface, text, border,
+accent, success, warning, and danger rather than palette values.
+
+Primitives contain the smallest reusable controls and layout units, including
+Button, IconButton, Input, Select, Textarea, Text, Stack, and Grid. Components
+compose them into domain-neutral controls such as Badge, StatusSignal,
+Progress, Tabs, Tooltip, Dialog, Panel, EmptyState, Skeleton, and Spinner.
+Patterns capture repeated Control Center compositions such as ActionBar,
+DetailHeader, and split-panel tool frames without embedding convoy-specific
+business decisions.
+
+`src/ui/index.ts` is the only supported feature-code import boundary. Public
+component variants use TypeScript union types and stable semantic names. A
+component does not accept arbitrary colors or unchecked style variants merely
+to bypass the design system.
+
+The visual language is a dense professional operations interface: compact
+panels, clear hierarchy, restrained surfaces, and strong color reserved for
+current state and primary actions. Status always combines icon and text.
+Light and dark modes use the same semantic component contracts.
+
+The following rules are mandatory and automated:
+
+- Feature code imports shared UI only from `@/ui`, never from internal
+  component subpaths.
+- Feature code does not create raw button, input, select, or textarea controls;
+  interactive elements come from the design system.
+- Component and feature styles use semantic tokens instead of raw hex, rgb,
+  hsl, or ad hoc spacing values.
+- Accessibility names, focus states, disabled states, keyboard behavior, and
+  light/dark behavior are part of each component contract.
+- Every exported component has focused unit tests and a usage example in
+  `src/ui/README.md`.
+- `npm run check` runs TypeScript, Vitest, ESLint, and Stylelint enforcement.
+
+There is no Storybook and no `/dev/ui-kit` route. Visual regressions are caught
+through component tests and browser screenshots of representative real
+Control Center compositions at the required themes and viewport sizes.
 
 ## Configuration
 
@@ -366,6 +433,12 @@ All implementation uses test-first red/green/refactor cycles.
 - **Frontend unit tests:** selection, status rendering, action availability,
   terminal creation guard, diff navigation, chat state, themes, and degraded
   states.
+- **Design-system tests:** typed variants, accessibility behavior, token-only
+  styling, light/dark contracts, and enforcement that feature code uses the
+  public `@/ui` boundary rather than raw interactive controls.
+- **Static checks:** TypeScript, ESLint, and Stylelint are mandatory parts of
+  `npm run check`; raw colors, private UI imports, and disallowed JSX controls
+  fail locally and in CI.
 - **Contract tests:** Huma OpenAPI generation and generated TypeScript client
   sync.
 - **Integration tests:** opt-in real tmux on a dedicated socket, real Git temp
@@ -392,16 +465,18 @@ available.
    `work_dir`.
 2. `ga-8mr.2`: create the localhost Go binary, typed API, embedded React shell,
    and configuration validation.
-3. `ga-8mr.3`: project convoys, workflow progress, sessions, beads, orders, and
+3. `ga-8mr.13`: establish the internal design system, tokens, themes,
+   components, documentation, and automated style boundaries.
+4. `ga-8mr.3`: project convoys, workflow progress, sessions, beads, orders, and
    simultaneous signals.
-4. `ga-8mr.4`: add the cancellable local job engine.
-5. `ga-8mr.5`: add local worktree status and unified diff.
-6. `ga-8mr.6`: add explicit xterm plus tmux and native terminal handoff.
-7. `ga-8mr.7`: integrate the externally supplied persistent convoy assistant.
-8. `ga-8mr.8`: integrate the external runtime command contract.
-9. `ga-8mr.9`: add truthful action stubs, order detail, and read-only MR state.
-10. `ga-8mr.10`: assemble the adaptive, themed, accessible cockpit.
-11. `ga-8mr.11`: package, document, and run final acceptance checks.
+5. `ga-8mr.4`: add the cancellable local job engine.
+6. `ga-8mr.5`: add local worktree status and unified diff.
+7. `ga-8mr.6`: add explicit xterm plus tmux and native terminal handoff.
+8. `ga-8mr.7`: integrate the externally supplied persistent convoy assistant.
+9. `ga-8mr.8`: integrate the external runtime command contract.
+10. `ga-8mr.9`: add truthful action stubs, order detail, and read-only MR state.
+11. `ga-8mr.10`: assemble the adaptive, themed, accessible cockpit.
+12. `ga-8mr.11`: package, document, and run final acceptance checks.
 
 ## Acceptance criteria
 
@@ -415,5 +490,7 @@ convoy environment through the schema-versioned pack command.
 
 Different convoys remain independent. Terminal and environment lifecycles
 remain independent. The app works at both required viewport sizes, in light
-and dark themes, and all applicable Go, frontend, contract, integration, vet,
-build, and browser smoke checks pass.
+and dark themes. All feature screens use the internal design system, and the
+automated UI-boundary rules reject private imports, raw interactive controls,
+and non-token styling. All applicable Go, frontend, contract, integration,
+vet, build, and browser smoke checks pass.
