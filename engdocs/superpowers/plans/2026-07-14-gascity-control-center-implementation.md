@@ -6,9 +6,9 @@
 > checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Ship a standalone loopback-only GasCity Control Center that projects
-one configured city's live convoys and orders, shows local worktree state, and
-provides explicit terminal, assistant, runtime, and action surfaces through one
-adaptive React cockpit.
+one configured city's live convoys, orders, Mayor session, and mail, shows local
+worktree state, and provides explicit terminal, assistant, runtime, and action
+surfaces through one adaptive React cockpit.
 
 **Architecture:** `cmd/gc-control` embeds a React/Vite application and delegates
 to fork-owned Go packages under `internal/controlcenter`. The Go server owns the
@@ -41,6 +41,10 @@ Playwright, `@xterm/xterm`, `@xterm/addon-fit`, Gorilla WebSocket,
   Storybook, or a development component-gallery route.
 - Only explicit **Open terminal** may create a tmux session. Runtime start/stop
   and tmux open/close remain independent in code and tests.
+- Mayor must resolve and reuse the existing configured named session. Control
+  Center never creates a second Mayor or falls back to another agent.
+- Mail is read-only in this release. Opening a message must not mark it read,
+  and no send, reply, archive, delete, or read-state mutation is exposed.
 - All feature UI imports shared controls through `@/ui`. Feature code may not
   declare raw `button`, `input`, `select`, or `textarea` elements or use raw
   palette values.
@@ -60,14 +64,16 @@ Playwright, `@xterm/xterm`, `@xterm/addon-fit`, Gorilla WebSocket,
 | 2 | `ga-8mr.2` | Go/React application foundation | Task 1 |
 | 3 | `ga-8mr.13` | Internal design system | Task 2 |
 | 4 | `ga-8mr.3` | Live convoys, beads, orders, progress, events | Task 3 |
+| 4A | `ga-8mr.15` | Existing Mayor session workspace | Tasks 3-4 |
+| 4B | `ga-8mr.16` | Read-only mail and notifications | Tasks 3-4 |
 | 5 | `ga-8mr.4` | Bounded cancellable job engine | Task 4 |
 | 6 | `ga-8mr.5` | Canonical worktree and local diff | Tasks 4-5 |
 | 7 | `ga-8mr.6` | Explicit embedded/native tmux terminal | Tasks 5-6 |
 | 8 | `ga-8mr.7` | Persistent convoy assistant integration | Tasks 1, 4, 6 |
 | 9 | `ga-8mr.8` | Runtime `env-*` integration | Tasks 5-6; TaxDome runtime contract |
 | 10 | `ga-8mr.9` | Action stubs, order detail, read-only MR | Tasks 4-6 |
-| 11 | `ga-8mr.10` | Adaptive integrated cockpit | Tasks 3-10 |
-| 12 | `ga-8mr.11` | Packaging, docs, acceptance | Tasks 1-11 |
+| 11 | `ga-8mr.10` | Adaptive integrated cockpit | Tasks 3-10, 4A-4B |
+| 12 | `ga-8mr.11` | Packaging, docs, acceptance | Tasks 1-11, 4A-4B |
 
 The runtime contract is implemented on TaxDome branch
 `codex/resumable-feature-environments` at bead `ga-xep`. Before Task 9, verify
@@ -294,15 +300,16 @@ type Config struct {
     CityName          string
     GCExecutable      string
     PackName          string
+    MayorIdentity     string
     AssistantTemplate string
     NativeTerminalApp string
 }
 ```
 
 Tests must accept `127.0.0.1:0`, default `NativeTerminalApp` to `Terminal`,
-require city/pack/assistant values, validate the Supervisor URL, resolve a blank
-`GCExecutable` with `exec.LookPath("gc")`, and reject `0.0.0.0`, LAN IPs, or a
-hostname resolving beyond loopback.
+require city/pack/Mayor-identity/assistant values, validate the Supervisor URL,
+resolve a blank `GCExecutable` with `exec.LookPath("gc")`, and reject
+`0.0.0.0`, LAN IPs, or a hostname resolving beyond loopback.
 
 ```bash
 go test ./internal/controlcenter -run 'TestConfig' -count=1
@@ -638,6 +645,156 @@ cd cmd/gc-control/web && npm run check
 cd ../../.. && make control-center-check
 git add internal/controlcenter cmd/gc-control internal/controlcenter/openapi.json
 git commit -m "feat: project live Control Center state"
+git pull --rebase
+git push
+```
+
+---
+
+## Task 4A: Add the Existing Mayor Session Workspace (`ga-8mr.15`)
+
+**Files:**
+
+- Create: `internal/controlcenter/mayor/{client.go,service.go,types.go}`
+- Create: matching `*_test.go`
+- Create: `internal/controlcenter/api/mayor.go` and tests
+- Create: `cmd/gc-control/web/src/features/mayor/*`
+
+- [ ] **Step 1: Write named-session discovery tests.**
+
+Resolve the configured Mayor identity from
+`StatusBody.NamedSessionDetails`. Cover reserved-unmaterialized, materialized,
+missing, duplicate, partial, and disconnected states. The resolver receives an
+explicit configured identity; it must not match a process title, guess another
+session, or call session creation.
+
+Use the typed Supervisor reads:
+
+```go
+GetV0CityByCityNameStatusWithResponse
+GetV0CityByCityNameSessionByIdWithResponse
+GetV0CityByCityNameSessionByIdTranscriptWithResponse
+GetV0CityByCityNameSessionByIdPendingWithResponse
+```
+
+A reserved-unmaterialized Mayor is available but dormant. A direct session 404
+in that state is not presented as an infrastructure failure.
+
+- [ ] **Step 2: Write transcript and live-stream tests.**
+
+Test conversation-format pagination, older-page cursors, live turn/activity/
+pending events, bounded subscribers, disconnect state, and full snapshot
+refresh after reconnect. The Go adapter must use raw `StreamSession` with a
+bounded SSE decoder; `StreamSessionWithResponse` buffers the long-lived body
+and is forbidden in the live path.
+
+- [ ] **Step 3: Write submit and pending-response tests.**
+
+First explicit send to a reserved identity uses `default` and may materialize
+that configured named session. Later active sends use `follow_up` only when
+`SubmissionCapabilities.SupportsFollowUp` allows it. Never expose
+`interrupt_now`. Require a unique `X-GC-Request`, correlate the 202 request ID
+through city events, and bind `RespondSessionWithResponse` to the currently
+displayed pending request ID. Prove no duplicate Mayor or fallback session is
+created.
+
+- [ ] **Step 4: Add the typed API and top-level UI.**
+
+Register:
+
+```text
+GET  /api/v1/mayor
+GET  /api/v1/mayor/transcript
+GET  /api/v1/mayor/events
+POST /api/v1/mayor/messages
+POST /api/v1/mayor/interactions/{request_id}
+```
+
+Build the Mayor top-level view with state, transcript, live activity, pending
+interaction, composer, loading/empty/degraded states, and navigation
+persistence. Use only `@/ui`. The view is available without selecting a convoy
+and shares no state with the convoy assistant.
+
+- [ ] **Step 5: Regenerate, verify, commit, and push.**
+
+```bash
+make control-center-gen
+go test ./internal/controlcenter/mayor ./internal/controlcenter/api -count=1
+cd cmd/gc-control/web && npm run check
+cd ../../.. && make control-center-check
+git add internal/controlcenter cmd/gc-control
+git commit -m "feat: add Control Center Mayor workspace"
+git pull --rebase
+git push
+```
+
+---
+
+## Task 4B: Add Read-Only Mail Notifications (`ga-8mr.16`)
+
+**Files:**
+
+- Create: `internal/controlcenter/mailbox/{client.go,projection.go,types.go}`
+- Create: matching `*_test.go`
+- Create: `internal/controlcenter/api/mail.go` and tests
+- Create: `cmd/gc-control/web/src/features/mail/*`
+
+- [ ] **Step 1: Write mailbox projection and pagination tests.**
+
+Use only the non-mutating typed Supervisor reads:
+
+```go
+GetV0CityByCityNameMailCountWithResponse
+GetV0CityByCityNameMailWithResponse
+GetV0CityByCityNameMailByIdWithResponse
+GetV0CityByCityNameMailThreadByIdWithResponse
+```
+
+Cover unread and all filters, total versus page length, cursor pagination,
+message detail, ordered thread context, multiple rigs, partial items plus
+`PartialErrors`, and all-provider failure. Opening detail must leave read state
+unchanged.
+
+- [ ] **Step 2: Prove the mutation boundary.**
+
+The mailbox interface intentionally contains no send, reply, mark-read,
+mark-unread, archive, or delete method. Add API tests that no mutation route is
+registered and UI tests that selecting a message performs GETs only. Do not
+call `PostV0CityByCityNameMailByIdReadWithResponse` or any other mail mutation.
+
+- [ ] **Step 3: Add event-driven invalidation.**
+
+Use raw `StreamEvents`, not the buffering `StreamEventsWithResponse`. Treat all
+`mail.*` event variants as invalidation hints, refresh count and visible list,
+and refresh or clear selected detail as needed. Test event cursor resume,
+bounded reconnect backoff, last-confirmed stale state, and full refresh after
+reconnect.
+
+- [ ] **Step 4: Add the typed API and top-level UI.**
+
+Register:
+
+```text
+GET /api/v1/mail/count
+GET /api/v1/mail
+GET /api/v1/mail/{id}
+GET /api/v1/mail/{id}/thread
+```
+
+Build a top-level Mail view with authoritative unread badge, `Unread | All`
+filter, paginated list, message detail, thread, loading/empty/partial/stale
+states, and selection preservation across refresh. It is city-global and uses
+only `@/ui`.
+
+- [ ] **Step 5: Regenerate, verify, commit, and push.**
+
+```bash
+make control-center-gen
+go test ./internal/controlcenter/mailbox ./internal/controlcenter/api -count=1
+cd cmd/gc-control/web && npm run check
+cd ../../.. && make control-center-check
+git add internal/controlcenter cmd/gc-control
+git commit -m "feat: add Control Center mail notifications"
 git pull --rebase
 git push
 ```
@@ -1202,10 +1359,12 @@ git push
 
 - [ ] **Step 1: Write integration-level component tests first.**
 
-Test left Convoys/Orders selection persistence, selected-convoy context across
+Test top-level Convoys/Orders/Mayor/Mail selection persistence, Mayor and Mail
+availability without a selected convoy, selected-convoy context across
 Terminal/Diff/Chat/Beads, simultaneous status text, separate MR lifecycle,
-Needs input, job state, stub explanations, loading/empty/partial/stale/
-disconnected states, and the explicit terminal creation guard.
+Needs input, job state, unread badge, stub explanations,
+loading/empty/partial/stale/disconnected states, and the explicit terminal
+creation guard.
 
 - [ ] **Step 2: Write failing viewport and overflow tests.**
 
@@ -1252,7 +1411,8 @@ Capture real cockpit compositions, not a component gallery:
 ```
 
 Each fixture includes running plus fail-gate signals, dirty diff, a terminal,
-chat history, and runtime state. Keep screenshot paths under
+chat history, runtime state, Mayor activity, and the Mail unread badge. Keep
+screenshot paths under
 `cmd/gc-control/web/e2e/__screenshots__/`.
 
 - [ ] **Step 7: Verify, commit, and push.**
@@ -1284,9 +1444,10 @@ git push
 
 Use the integration build tag and isolated `GC_HOME`, runtime directory, Git
 repositories, ports, fake Supervisor, fake pack executable, and dedicated tmux
-socket. Seed two convoys, workflow members, sessions, pending interaction, and
-order history. Cleanup must prove no process, listener, tmux session, or temp
-worktree remains.
+socket. Seed two convoys, workflow members, sessions, the configured Mayor
+identity and transcript, Mayor pending interaction, city mail and thread,
+convoy pending interaction, and order history. Cleanup must prove no process,
+listener, tmux session, or temp worktree remains.
 
 - [ ] **Step 2: Encode the first complete operator flow.**
 
@@ -1300,15 +1461,20 @@ The test must:
 6. start and stop the fake schema-v1 environment without closing tmux;
 7. close tmux without stopping the environment;
 8. send first chat plus follow-up and isolate Needs input;
-9. verify every action mutation remains a non-executing stub;
-10. exercise a second convoy concurrently.
+9. open Mayor, submit a follow-up, answer its pending interaction, and assert
+   that no second named session was created;
+10. open Mail, verify unread count, detail, and thread while asserting that no
+    mail mutation request was made;
+11. verify every action mutation remains a non-executing stub;
+12. exercise a second convoy concurrently.
 
 - [ ] **Step 3: Document exact operation and boundaries.**
 
 `cmd/gc-control/README.md` includes build, configuration flags, launch, Vite
-development, one-city scope, Supervisor prerequisites, assistant-template
-requirement, TaxDome runtime commands, terminal lifecycle, native terminal
-adapters, troubleshooting, and the distinction from `cmd/gc/dashboard`.
+development, one-city scope, Supervisor prerequisites, configured Mayor
+identity, read-only Mail boundary, assistant-template requirement, TaxDome
+runtime commands, terminal lifecycle, native terminal adapters,
+troubleshooting, and the distinction from `cmd/gc/dashboard`.
 
 - [ ] **Step 4: Finish Makefile and generation drift checks.**
 
@@ -1365,6 +1531,10 @@ commit the HQ Dolt updates. If the known Beads remote divergence remains, keep
 - [ ] Terminal creation is explicit and its lifecycle is independent of runtime.
 - [ ] Assistant chat uses only the configured external template and leaves edits
   dirty.
+- [ ] Mayor reuses exactly one configured named session, exposes no interrupt or
+  lifecycle mutation, and never falls back to another agent.
+- [ ] Mail count, list, detail, and thread are read-only; opening a message does
+  not mark it read and no mailbox mutation route exists.
 - [ ] Local diff contains no invented reviewer comments.
 - [ ] All initial MR/action mutations are truthful non-executing stubs.
 - [ ] Orders remain observation-only.

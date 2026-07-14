@@ -13,11 +13,12 @@ repository. It gives an operator one focused interface for observing and
 controlling convoys without routing every action through the Mayor or opening
 an unmanaged terminal manually.
 
-The product controls one preconfigured GasCity city. The left side lists
-convoys and orders. The right side is the selected convoy cockpit: workflow
-progress, simultaneous status signals, actions, local diff, beads, persistent
-assistant chat, runtime controls, and an explicitly opened terminal rooted in
-the convoy worktree.
+The product controls one preconfigured GasCity city. Its top-level navigation
+contains Convoys, Orders, Mayor, and Mail. Convoy selection opens a focused
+cockpit with workflow progress, simultaneous status signals, actions, local
+diff, beads, persistent assistant chat, runtime controls, and an explicitly
+opened terminal rooted in the convoy worktree. Mayor and Mail remain global to
+the configured city rather than inheriting the selected convoy.
 
 The Control Center does not replace GasCity's object model or persistence. It
 projects current state from GasCity and invokes typed infrastructure
@@ -29,6 +30,10 @@ and pack commands remain the sources of truth.
 - Let an operator inspect any active convoy and understand what is happening.
 - Show exact workflow progress and all relevant current state signals.
 - Keep work on different convoys independent and parallel.
+- Reach the existing configured Mayor session directly, see its transcript and
+  pending interaction, and send a quick follow-up without creating a duplicate
+  Mayor.
+- See city mail and unread notifications without leaving the Control Center.
 - Open an embedded terminal in the correct convoy worktree only after an
   explicit user action.
 - Support short follow-up conversations with one persistent assistant session
@@ -48,6 +53,7 @@ and pack commands remain the sources of truth.
 - Running a local pre-MR reviewer or rendering invented pre-MR inline review
   comments.
 - Editing or enabling orders.
+- Sending, replying to, archiving, deleting, or mutating read state for mail.
 - Implementing MR mutations before their pack commands exist.
 - Storing a second copy of convoy, order, workflow, runtime, or session state.
 - Starting a tmux session when the user only selects or views a convoy.
@@ -160,6 +166,7 @@ type Config struct {
     CityName         string
     GCExecutable     string
     PackName         string
+    MayorIdentity    string
     AssistantTemplate string
     NativeTerminalApp string
 }
@@ -169,7 +176,9 @@ type Config struct {
 There is no city switcher. `AssistantTemplate` refers to a template delivered
 by another task; the Control Center validates and invokes it but never embeds a
 role name in Go behavior. `NativeTerminalApp` defaults to macOS Terminal and
-can be set to another application such as iTerm or Warp.
+can be set to another application such as iTerm or Warp. `MayorIdentity`
+selects one configured named session from Supervisor status; it is never
+inferred from a runtime process title.
 
 ## Sources of truth
 
@@ -177,6 +186,8 @@ can be set to another application such as iTerm or Warp.
 | --- | --- | --- |
 | Convoys and workflow members | Supervisor and beads | Project typed read models |
 | Orders and execution history | Supervisor order endpoints | Read-only list and detail |
+| Mayor identity, transcript, and pending input | Supervisor named-session endpoints | Reuse exactly one configured Mayor session |
+| City mail and unread count | Supervisor mail endpoints | Read-only count, list, message, and thread |
 | Session activity and transcript | Supervisor session endpoints and SSE | Stream and paginate |
 | Local changes | Git in the resolved worktree | Compute status and diff on demand |
 | Terminal existence | Dedicated tmux socket | Query tmux; never write a status file |
@@ -192,16 +203,19 @@ after reconnect. It does not create a database for operational state.
 
 ### Left navigation
 
-The left column has two top-level views:
+The left column has four top-level views:
 
 - **Convoys:** active and recent convoys, each with visible icon plus text
   signals and compact closed/total progress.
 - **Orders:** enabled state, last execution status, and execution history.
+- **Mayor:** the existing configured named Mayor session, its transcript, live
+  activity, pending interaction, and message composer.
+- **Mail:** unread badge, message list, selected message, and thread context.
 
-Selection is preserved while switching tools. The application does not invent
-a single priority status. A convoy may simultaneously show `Running`,
-`Fail gate`, `Needs input`, or `Environment stopped` where those facts are all
-true.
+Top-level and convoy-tool selection is preserved while switching views. Mayor
+and Mail do not require a selected convoy. The application does not invent a
+single priority status. A convoy may simultaneously show `Running`, `Fail
+gate`, `Needs input`, or `Environment stopped` where those facts are all true.
 
 ### Convoy header
 
@@ -325,6 +339,33 @@ commit them until a future explicit **Update MR** action is implemented.
 If the external assistant template is missing, chat shows a configuration
 error. It never falls back to the Mayor or another worker implicitly.
 
+## Mayor workspace
+
+The Mayor tab resolves the configured named Mayor session through Supervisor
+session metadata. It never starts a second Mayor, guesses another agent as a
+fallback, or treats a transient runtime process name as identity. Zero or more
+than one matching configured Mayor is a visible configuration error.
+
+The workspace shows current session state, paginated transcript, live activity,
+and pending interaction. A user message is submitted through the Supervisor
+session API: active work receives a non-interrupting `follow_up`, while an idle
+or resumable session uses the supported default/resume path. Pending input can
+be answered only for the resolved Mayor session. Sleeping, disconnected,
+partial, and missing states remain explicit.
+
+## Mail notifications
+
+The Mail tab is a read-only projection of the configured city's Supervisor
+mailbox. It shows the authoritative unread count as a top-level badge, supports
+bounded list pagination and filters already provided by Supervisor, and opens
+message detail with its thread. Partial list or thread failures preserve usable
+items and display the affected source.
+
+Opening a message does not mark it read. The first release exposes no send,
+reply, archive, delete, or read-state mutation, even if Supervisor provides
+those operations. Mail-related events invalidate the count and visible list;
+reconnect performs a full refresh before stale state is cleared.
+
 ## Runtime environment
 
 Runtime state and mutations come only from the TaxDome pack's schema-versioned
@@ -381,6 +422,15 @@ GET    /api/v1/convoys/{id}/worktree
 GET    /api/v1/convoys/{id}/diff
 GET    /api/v1/orders
 GET    /api/v1/orders/history
+GET    /api/v1/mayor
+GET    /api/v1/mayor/transcript
+GET    /api/v1/mayor/events
+POST   /api/v1/mayor/messages
+POST   /api/v1/mayor/interactions/{request_id}
+GET    /api/v1/mail/count
+GET    /api/v1/mail
+GET    /api/v1/mail/{id}
+GET    /api/v1/mail/{id}/thread
 GET    /api/v1/events
 POST   /api/v1/convoys/{id}/terminal
 DELETE /api/v1/convoys/{id}/terminal
@@ -431,8 +481,8 @@ All implementation uses test-first red/green/refactor cycles.
   progress calculation, signal composition, job serialization, worktree
   validation, Git diff cases, runtime decoding, and command construction.
 - **Frontend unit tests:** selection, status rendering, action availability,
-  terminal creation guard, diff navigation, chat state, themes, and degraded
-  states.
+  terminal creation guard, diff navigation, chat state, Mayor resolution and
+  follow-up state, Mail unread/list/thread state, themes, and degraded states.
 - **Design-system tests:** typed variants, accessibility behavior, token-only
   styling, light/dark contracts, and enforcement that feature code uses the
   public `@/ui` boundary rather than raw interactive controls.
@@ -454,7 +504,11 @@ The first end-to-end acceptance flow is:
 4. inspect its beads and local dirty diff;
 5. click Open terminal and verify the exact worktree;
 6. reload and reattach to the same tmux session;
-7. close only that tmux session.
+7. close only that tmux session;
+8. open Mayor, submit a follow-up, and answer its pending interaction without
+   creating another named session;
+9. open Mail, verify the unread badge and message thread, and prove no mailbox
+   mutation is issued.
 
 Runtime and chat acceptance are added when their external pack contracts are
 available.
@@ -469,14 +523,16 @@ available.
    components, documentation, and automated style boundaries.
 4. `ga-8mr.3`: project convoys, workflow progress, sessions, beads, orders, and
    simultaneous signals.
-5. `ga-8mr.4`: add the cancellable local job engine.
-6. `ga-8mr.5`: add local worktree status and unified diff.
-7. `ga-8mr.6`: add explicit xterm plus tmux and native terminal handoff.
-8. `ga-8mr.7`: integrate the externally supplied persistent convoy assistant.
-9. `ga-8mr.8`: integrate the external runtime command contract.
-10. `ga-8mr.9`: add truthful action stubs, order detail, and read-only MR state.
-11. `ga-8mr.10`: assemble the adaptive, themed, accessible cockpit.
-12. `ga-8mr.11`: package, document, and run final acceptance checks.
+5. `ga-8mr.15`: add the global workspace for the existing configured Mayor.
+6. `ga-8mr.16`: add read-only city mail and notification state.
+7. `ga-8mr.4`: add the cancellable local job engine.
+8. `ga-8mr.5`: add local worktree status and unified diff.
+9. `ga-8mr.6`: add explicit xterm plus tmux and native terminal handoff.
+10. `ga-8mr.7`: integrate the externally supplied persistent convoy assistant.
+11. `ga-8mr.8`: integrate the external runtime command contract.
+12. `ga-8mr.9`: add truthful action stubs, order detail, and read-only MR state.
+13. `ga-8mr.10`: assemble the adaptive, themed, accessible cockpit.
+14. `ga-8mr.11`: package, document, and run final acceptance checks.
 
 ## Acceptance criteria
 
@@ -485,12 +541,14 @@ to select any active convoy in the configured city, understand its exact
 workflow progress and simultaneous states, inspect orders, beads, and the
 local dirty diff, explicitly open or attach an embedded tmux terminal in the
 correct worktree, open that same session in a configured macOS terminal, use
-the externally supplied persistent convoy assistant, and start or stop the
-convoy environment through the schema-versioned pack command.
+the externally supplied persistent convoy assistant, start or stop the convoy
+environment through the schema-versioned pack command, interact with the one
+configured Mayor session, and inspect city mail plus unread notifications.
 
 Different convoys remain independent. Terminal and environment lifecycles
 remain independent. The app works at both required viewport sizes, in light
 and dark themes. All feature screens use the internal design system, and the
 automated UI-boundary rules reject private imports, raw interactive controls,
-and non-token styling. All applicable Go, frontend, contract, integration,
+and non-token styling. Mayor interaction never creates a duplicate session;
+Mail remains read-only. All applicable Go, frontend, contract, integration,
 vet, build, and browser smoke checks pass.
