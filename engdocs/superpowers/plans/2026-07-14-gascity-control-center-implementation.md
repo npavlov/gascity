@@ -517,7 +517,9 @@ export type StatusTone =
 ```
 
 `ActionBar`, `DetailHeader`, and `ToolFrame` remain domain-neutral and accept
-composed children rather than convoy objects.
+composed children rather than convoy objects. Their layout CSS uses fluid
+`minmax()`/`clamp()` bounds, wrapping, and content-derived reflow thresholds;
+it never switches on a named device class or display diagonal.
 
 - [ ] **Step 6: Document every public export.**
 
@@ -1383,6 +1385,8 @@ git push
 - Create: `cmd/gc-control/web/src/features/cockpit/fixtures.ts`
 - Create: `cmd/gc-control/web/e2e/cockpit.spec.ts`
 - Create: `cmd/gc-control/web/playwright.config.ts`
+- Modify: `cmd/gc-control/web/src/ui/tokens.css`
+- Modify: `cmd/gc-control/web/src/ui/token-contract.test.ts`
 
 - [ ] **Step 1: Write integration-level component tests first.**
 
@@ -1393,26 +1397,69 @@ Needs input, job state, unread badge, stub explanations,
 loading/empty/partial/stale/disconnected states, and the explicit terminal
 creation guard.
 
-- [ ] **Step 2: Write failing viewport and overflow tests.**
+- [ ] **Step 2: Write failing continuous viewport and overflow tests.**
 
-Use Playwright with real fixture-backed Control Center routes. At 1366x768,
-assert one active tool panel and no document horizontal overflow. At 2560x1440,
-assert the overview grid can show terminal, diff, and chat simultaneously while
-beads/order context remains reachable.
+Use Playwright with real fixture-backed Control Center routes. Sweep the
+desktop range from `1024` through `2560` CSS pixels in `64` pixel increments at
+an `800` pixel height, then run the exact checkpoints `1024x720`, `1280x800`,
+`1366x768`, `1440x900`, `1680x1050`, `1920x1080`, and `2560x1440` in both
+themes. At every width assert:
 
-- [ ] **Step 3: Implement the focused and overview layouts.**
+```ts
+expect(await page.evaluate(() => document.documentElement.scrollWidth <=
+  document.documentElement.clientWidth)).toBe(true);
+expect(await page.getByRole("navigation", { name: "Convoys and orders" })
+  .isVisible()).toBe(true);
+expect(await page.getByRole("main").isVisible()).toBe(true);
+```
 
-Use CSS grid plus a named breakpoint at 1800px:
+Also assert that every implemented tool remains reachable, selection survives
+each resize, action bars wrap instead of clipping, and scroll context is kept
+inside the owning list/diff/terminal rather than moving to the document. CSS
+viewport width is the contract because it already reflects display scaling,
+browser zoom, and the current window size; screen inches are not inspected.
+
+- [ ] **Step 3: Implement one fluid, container-responsive layout.**
+
+Use container queries, fluid column bounds, and auto-fitting tool panels. Query
+thresholds come from the minimum readable widths of their content, not from
+13-inch/30-inch device labels or a binary focused/wide mode:
 
 ```css
-.cockpit { grid-template-columns: var(--cc-size-sidebar) minmax(0, 1fr); }
-@media (min-width: 1800px) {
-  .cockpit-tools { grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); }
+:root {
+  --cc-size-cockpit-nav-min: 14rem;
+  --cc-size-cockpit-nav-max: 20rem;
+  --cc-size-cockpit-tool-min: 30rem;
+}
+.cockpit-shell { container: cockpit / inline-size; }
+.cockpit {
+  grid-template-columns:
+    clamp(
+      var(--cc-size-cockpit-nav-min),
+      20cqi,
+      var(--cc-size-cockpit-nav-max)
+    )
+    minmax(0, 1fr);
+}
+.cockpit-tools {
+  grid-template-columns:
+    repeat(
+      auto-fit,
+      minmax(min(100%, var(--cc-size-cockpit-tool-min)), 1fr)
+    );
+}
+@container cockpit (width < 64rem) {
+  .cockpit { grid-template-columns: minmax(0, 1fr); }
 }
 ```
 
-All dimensions and visual values come from semantic tokens. Wide mode adds
-density rather than stretching a single panel to full width.
+Reusable dimensions and all visual values come from semantic tokens; add their
+presence to the token contract test. The `64rem` query threshold is a
+documented content minimum because custom properties cannot participate in a
+container-query condition. Between query thresholds, columns grow
+continuously. Additional space increases useful simultaneous information
+density while each reading/tool region remains bounded; shrinking space
+reflows secondary panes without hiding their tabs or losing state.
 
 - [ ] **Step 4: Implement theme and preference behavior.**
 
@@ -1426,13 +1473,17 @@ The left list, tabs, diff files, action bar, and dialogs are keyboard reachable
 with visible focus. Status is understandable with icon and text when all color
 styles are disabled. Add automated axe checks for both layouts and themes.
 
-- [ ] **Step 6: Add four representative screenshot baselines.**
+- [ ] **Step 6: Add representative screenshot samples.**
 
 Capture real cockpit compositions, not a component gallery:
 
 ```text
+1024x768 light
+1024x768 dark
 1366x768 light
 1366x768 dark
+1680x1050 light
+1680x1050 dark
 2560x1440 light
 2560x1440 dark
 ```
@@ -1440,7 +1491,9 @@ Capture real cockpit compositions, not a component gallery:
 Each fixture includes running plus fail-gate signals, dirty diff, a terminal,
 chat history, runtime state, Mayor activity, and the Mail unread badge. Keep
 screenshot paths under
-`cmd/gc-control/web/e2e/__screenshots__/`.
+`cmd/gc-control/web/e2e/__screenshots__/`. These images sample the visual
+continuum only; the Step 2 sweep is the acceptance proof for intermediate
+widths.
 
 - [ ] **Step 7: Verify, commit, and push.**
 

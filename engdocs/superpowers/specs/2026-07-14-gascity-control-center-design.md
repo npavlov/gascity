@@ -43,7 +43,9 @@ and pack commands remain the sources of truth.
   command contract.
 - Keep every Control Center screen visually consistent through one internal
   design system with enforced tokens, components, and composition rules.
-- Work well at 1366x768 and 2560x1440 in light and dark themes.
+- Remain continuously adaptive from 1024 through 2560+ CSS pixels in light
+  and dark themes, including the intermediate widths produced by 13–30 inch
+  displays, operating-system scaling, browser zoom, and window resizing.
 
 ## Non-goals for the first release
 
@@ -152,8 +154,9 @@ The following rules are mandatory and automated:
 - `npm run check` runs TypeScript, Vitest, ESLint, and Stylelint enforcement.
 
 There is no Storybook and no `/dev/ui-kit` route. Visual regressions are caught
-through component tests and browser screenshots of representative real
-Control Center compositions at the required themes and viewport sizes.
+through component tests, matrix-wide overflow/reachability assertions, and
+browser screenshots of representative real Control Center compositions. The
+screenshots sample the fluid range; they do not define discrete layouts.
 
 ## Configuration
 
@@ -237,10 +240,13 @@ gate contributes to closed/total progress while still producing a visible
 
 The right side contains Terminal, Diff, Chat, and Beads surfaces.
 
-At focused widths such as 1366x768, one tool surface is active at a time. At
-wide widths such as 2560x1440, the user can keep terminal, diff, and chat
-visible together. Wide mode increases information density without stretching
-one panel across the full display.
+Tool composition responds to the width available to the cockpit container, not
+to a screen diagonal or one binary narrow/wide flag. Columns use fluid
+`minmax()`/`clamp()` bounds between reflow thresholds. When space is
+constrained, one tool surface remains active while secondary panes move below
+the workspace or behind tabs. As space grows, the same composition
+progressively admits more simultaneous surfaces; terminal, diff, and chat can
+coexist without stretching one panel across the full display.
 
 ## Live state and progress
 
@@ -470,8 +476,15 @@ and terminal application names are validated before process execution.
   files.
 - Theme uses semantic tokens shared by light and dark modes.
 - UI preference is the only browser-persisted state.
-- 1366x768 and 2560x1440 are required viewport test cases with no horizontal
-  page overflow.
+- The supported desktop contract is 1024–2560+ CSS pixels. It must have no
+  document-level horizontal overflow at `1024`, `1280`, `1366`, `1440`,
+  `1680`, `1920`, and `2560` CSS-pixel checkpoints, with representative short
+  and tall heights. These are verification samples across one fluid layout,
+  not separate display modes.
+- Container and media queries are chosen from content minimums. Resizing,
+  system scaling, and browser zoom may change which panes are simultaneous,
+  but never make an implemented surface unreachable or destroy selection and
+  scroll context.
 
 ## Testing strategy
 
@@ -493,8 +506,10 @@ All implementation uses test-first red/green/refactor cycles.
   sync.
 - **Integration tests:** opt-in real tmux on a dedicated socket, real Git temp
   repositories, and a fake Supervisor/pack command boundary.
-- **Browser smoke:** focused and wide viewports, both themes, reconnect, and the
-  first vertical operator flow.
+- **Browser smoke:** the complete viewport matrix across the continuous
+  adaptive range, both themes, reconnect, and the first vertical operator
+  flow. Visual regression images are representative samples, while overflow
+  and reachability assertions run at every matrix width.
 
 The first end-to-end acceptance flow is:
 
@@ -546,8 +561,9 @@ environment through the schema-versioned pack command, interact with the one
 configured Mayor session, and inspect city mail plus unread notifications.
 
 Different convoys remain independent. Terminal and environment lifecycles
-remain independent. The app works at both required viewport sizes, in light
-and dark themes. All feature screens use the internal design system, and the
+remain independent. The app stays usable without horizontal page overflow
+through the full 1024–2560+ CSS-pixel desktop range, in light and dark themes.
+All feature screens use the internal design system, and the
 automated UI-boundary rules reject private imports, raw interactive controls,
 and non-token styling. Mayor interaction never creates a duplicate session;
 Mail remains read-only. All applicable Go, frontend, contract, integration,
