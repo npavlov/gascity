@@ -13,6 +13,8 @@ import (
 // MayorProblem describes incomplete Mayor evidence without fabricating facts.
 // The Mayor-specific name avoids colliding with the existing gcstate Problem
 // OpenAPI component, whose shape includes a convoy resource identifier.
+//
+//nolint:revive // The prefix preserves a distinct external OpenAPI schema name.
 type MayorProblem struct {
 	Code      string `json:"code" minLength:"1"`
 	Source    string `json:"source" minLength:"1"`
@@ -21,8 +23,11 @@ type MayorProblem struct {
 }
 
 // MayorState is the normalized Mayor availability and activity state.
+//
+//nolint:revive // The prefix preserves a distinct external OpenAPI schema name.
 type MayorState string
 
+// Mayor lifecycle and availability states.
 const (
 	StateAvailableDormant MayorState = "available_dormant"
 	StateIdle             MayorState = "idle"
@@ -36,6 +41,8 @@ const (
 )
 
 // MayorView is the authoritative state of the configured named session.
+//
+//nolint:revive // The prefix preserves a distinct external OpenAPI schema name.
 type MayorView struct {
 	Identity          string              `json:"identity"`
 	Mode              string              `json:"mode,omitempty"`
@@ -111,6 +118,8 @@ type InteractionReceipt struct {
 }
 
 // MayorEvent is one bounded live workspace event.
+//
+//nolint:revive // The prefix preserves a distinct external OpenAPI schema name.
 type MayorEvent struct {
 	Kind      string              `json:"kind" enum:"turn,activity,pending,invalidate,stale"`
 	Cursor    string              `json:"cursor,omitempty"`

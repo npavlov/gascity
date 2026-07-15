@@ -287,7 +287,9 @@ export function App({ api, eventSourceFactory, mayorConnector, pollInterval = 10
           aria-label="Control Center resources"
           value={activeTab}
           onValueChange={(value) => {
-            if (value === "convoys" || value === "orders" || value === "mayor") setActiveTab(value);
+            if (value !== "convoys" && value !== "orders" && value !== "mayor") return;
+            setActiveTab(value);
+            if (value === "mayor") requestRefresh(["mayor-snapshots"]);
           }}
           items={tabItems}
         />

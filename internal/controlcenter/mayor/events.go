@@ -14,7 +14,7 @@ var (
 	errMayorDormant              = errors.New("configured Mayor is not materialized")
 	errMayorDiscoveryUnavailable = errors.New("configured Mayor discovery is unavailable")
 	errMayorRefreshUnavailable   = errors.New("configured Mayor authoritative refresh is unavailable")
-	errMayorHubStopped           = errors.New("Mayor event hub stopped")
+	errMayorHubStopped           = errors.New("mayor event hub stopped")
 )
 
 type snapshotSource interface {
@@ -129,11 +129,15 @@ func (h *Hub) run(ctx context.Context, done chan struct{}) {
 			continue
 		}
 		h.setCurrent(stream)
-		if !h.refresh(ctx) {
+		if refreshErr := h.refresh(ctx); refreshErr != nil {
 			_ = stream.Close()
 			h.setCurrent(nil)
 			if ctx.Err() != nil {
 				return
+			}
+			if errors.Is(refreshErr, errMayorDormant) {
+				attempt = 0
+				continue
 			}
 			if !waitMayor(ctx, h.retryDelay(attempt)) {
 				return
@@ -159,15 +163,19 @@ func (h *Hub) run(ctx context.Context, done chan struct{}) {
 	}
 }
 
-func (h *Hub) refresh(ctx context.Context) bool {
+func (h *Hub) refresh(ctx context.Context) error {
 	before := ""
 	snapshot, err := h.snapshot.Snapshot(ctx, SnapshotOptions{TranscriptBefore: &before, IncludePending: true})
 	if err != nil || snapshot.TranscriptError != nil || snapshot.PendingError != nil {
 		h.publish(MayorEvent{Kind: "stale", Resources: []string{"mayor", "transcript", "pending"}})
-		return false
+		return errMayorRefreshUnavailable
+	}
+	if !snapshot.View.Materialized {
+		h.publish(MayorEvent{Kind: "invalidate", Resources: []string{"mayor", "transcript", "pending"}})
+		return errMayorDormant
 	}
 	h.publish(MayorEvent{Kind: "invalidate", Resources: []string{"mayor", "transcript", "pending"}})
-	return true
+	return nil
 }
 
 func (h *Hub) consume(ctx context.Context, stream SessionEventStream, attempt *int) error {
@@ -189,9 +197,9 @@ func (h *Hub) consume(ctx context.Context, stream SessionEventStream, attempt *i
 			case <-refreshCtx.Done():
 				return
 			case <-refreshRequests:
-				if !h.refresh(refreshCtx) {
+				if err := h.refresh(refreshCtx); err != nil {
 					select {
-					case refreshFailed <- errMayorRefreshUnavailable:
+					case refreshFailed <- err:
 					case <-refreshCtx.Done():
 					}
 					return

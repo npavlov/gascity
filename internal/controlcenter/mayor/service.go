@@ -80,6 +80,9 @@ func (s *Service) Snapshot(ctx context.Context, options SnapshotOptions) (Snapsh
 	if err != nil {
 		return result, err
 	}
+	if options.IncludePending {
+		result.Pending = clonePending(view.Pending)
+	}
 	if options.TranscriptBefore != nil {
 		page := TranscriptPage{Turns: []TranscriptTurn{}, Problems: append([]MayorProblem(nil), view.Problems...), Degraded: view.Degraded, Stale: view.Stale}
 		if view.Materialized && !view.Stale {
@@ -87,7 +90,9 @@ func (s *Service) Snapshot(ctx context.Context, options SnapshotOptions) (Snapsh
 			if readErr != nil {
 				result.TranscriptError = readErr
 			} else {
-				page = TranscriptPage{Turns: source.Turns, HasOlder: source.HasOlder, Before: source.Before, Returned: source.Returned, Total: source.Total, Degraded: len(source.Problems) > 0, Problems: source.Problems}
+				problems := append([]MayorProblem(nil), view.Problems...)
+				problems = append(problems, source.Problems...)
+				page = TranscriptPage{Turns: source.Turns, HasOlder: source.HasOlder, Before: source.Before, Returned: source.Returned, Total: source.Total, Degraded: view.Degraded || len(source.Problems) > 0, Stale: view.Stale, Problems: problems}
 			}
 		}
 		result.Transcript = &page
@@ -96,8 +101,13 @@ func (s *Service) Snapshot(ctx context.Context, options SnapshotOptions) (Snapsh
 		source, readErr := s.reader.Pending(ctx, s.identity)
 		if readErr != nil {
 			result.PendingError = readErr
-		} else if source.Supported {
-			result.Pending = clonePending(source.Pending)
+		} else {
+			result.Pending = nil
+			if source.Supported {
+				result.Pending = clonePending(source.Pending)
+			}
+			result.View.Pending = clonePending(result.Pending)
+			s.storePending(result.View.SessionID, result.Pending)
 		}
 	}
 	return result, nil
@@ -106,7 +116,7 @@ func (s *Service) Snapshot(ctx context.Context, options SnapshotOptions) (Snapsh
 func (s *Service) fresh(ctx context.Context) (MayorView, error) {
 	view, err := s.resolve(ctx, true)
 	if err == nil {
-		s.store(view)
+		view = s.storeResolved(view)
 	}
 	return view, err
 }
@@ -300,14 +310,29 @@ func (s *Service) Respond(ctx context.Context, requestID string, input Interacti
 	if receipt.SessionID == "" || receipt.SessionID != view.SessionID {
 		return InteractionReceipt{}, &Error{Code: "upstream_protocol", Detail: "Mayor interaction response returned the wrong session identity", StatusCode: http.StatusBadGateway}
 	}
-	return InteractionReceipt{SessionID: receipt.SessionID, Status: receipt.Status}, nil
+	return InteractionReceipt(receipt), nil
 }
 
-func (s *Service) store(view MayorView) {
+func (s *Service) storePending(sessionID string, pending *PendingInteraction) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	copy := cloneView(view)
-	s.lastGood = &copy
+	if s.lastGood == nil || !s.lastGood.Materialized || s.lastGood.SessionID != sessionID {
+		return
+	}
+	cloned := cloneView(*s.lastGood)
+	cloned.Pending = clonePending(pending)
+	s.lastGood = &cloned
+}
+
+func (s *Service) storeResolved(view MayorView) MayorView {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if view.Materialized && view.Pending == nil && s.lastGood != nil && s.lastGood.Materialized && s.lastGood.SessionID == view.SessionID {
+		view.Pending = clonePending(s.lastGood.Pending)
+	}
+	cloned := cloneView(view)
+	s.lastGood = &cloned
+	return view
 }
 
 func (s *Service) cached(target *MayorView) bool {
@@ -335,19 +360,19 @@ func clonePending(pending *PendingInteraction) *PendingInteraction {
 	if pending == nil {
 		return nil
 	}
-	copy := *pending
-	copy.Options = append([]string(nil), pending.Options...)
-	copy.Metadata = cloneMetadata(pending.Metadata)
-	return &copy
+	cloned := *pending
+	cloned.Options = append([]string(nil), pending.Options...)
+	cloned.Metadata = cloneMetadata(pending.Metadata)
+	return &cloned
 }
 
 func cloneMetadata(metadata map[string]string) map[string]string {
 	if metadata == nil {
 		return nil
 	}
-	copy := make(map[string]string, len(metadata))
+	cloned := make(map[string]string, len(metadata))
 	for key, value := range metadata {
-		copy[key] = value
+		cloned[key] = value
 	}
-	return copy
+	return cloned
 }

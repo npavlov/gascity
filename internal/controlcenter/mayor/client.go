@@ -292,7 +292,7 @@ func (c *Client) AwaitSubmit(ctx context.Context, afterCursor, requestID, identi
 	if response.Body == nil {
 		return SubmitResult{}, &UpstreamError{Code: "upstream_protocol", StatusCode: response.StatusCode, Detail: "Supervisor submit result stream returned no body"}
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
 		return SubmitResult{}, &UpstreamError{Code: "upstream_http", StatusCode: response.StatusCode, Detail: fmt.Sprintf("Supervisor submit result stream returned status %d", response.StatusCode)}
 	}
@@ -328,7 +328,7 @@ func (c *Client) AwaitSubmit(ctx context.Context, afterCursor, requestID, identi
 	}
 }
 
-// StreamSession opens a context-cancelled raw conversation stream without a
+// StreamSession opens a context-canceled raw conversation stream without a
 // whole-response timeout.
 func (c *Client) StreamSession(ctx context.Context, identity string) (SessionEventStream, error) {
 	format := "conversation"

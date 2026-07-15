@@ -212,6 +212,33 @@ describe("App", () => {
     expect(connector).toHaveBeenCalledOnce();
   });
 
+  it("requests a full Mayor snapshot on tab activation to recover a failed bootstrap", async () => {
+    const user = userEvent.setup();
+    const getMayorTranscript = vi.fn<MayorAPI["getMayorTranscript"]>()
+      .mockRejectedValueOnce(new Error("bootstrap transcript offline"))
+      .mockResolvedValue({
+        turns: [{ role: "assistant", text: "Mayor recovered" }],
+        has_older: false,
+        returned: 1,
+        total: 1,
+        degraded: false,
+        stale: false,
+        problems: [],
+      });
+    const connector = vi.fn<MayorStreamConnector>(() => () => undefined);
+    const api = fullAPI({ ...mayorMethods({ getMayorTranscript }) });
+    render(<App api={api} mayorConnector={connector} />);
+
+    await screen.findByRole("heading", { name: "taxdome", level: 1 });
+    await waitFor(() => expect(getMayorTranscript).toHaveBeenCalledOnce());
+    expect(connector).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("tab", { name: "Mayor" }));
+    await waitFor(() => expect(getMayorTranscript).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(connector).toHaveBeenCalledOnce());
+    expect(screen.getByText("Mayor recovered")).toBeVisible();
+  });
+
 	it("uses one App-owned focus and visibility polling coordinator after Mayor opens", async () => {
 		const user = userEvent.setup();
 		const windowAdd = vi.spyOn(window, "addEventListener");

@@ -39,9 +39,9 @@ describe("MayorWorkspace", () => {
     const { container } = render(<MayorWorkspace controller={controller("idle")} />);
     expect(container.querySelector("svg.lucide-check")).toBeNull();
     expect(container.querySelector("svg.lucide-message-circle")).not.toBeNull();
-    expect(mayorWorkspaceStyles).not.toContain("max-height: 60vh");
-    expect(mayorWorkspaceStyles).toContain("--cc-size-mayor-transcript-max-block:");
-    expect(mayorWorkspaceStyles).toContain("max-block-size: var(--cc-size-mayor-transcript-max-block)");
+    expect(mayorWorkspaceStyles).not.toMatch(/\b\d+(?:\.\d+)?(?:vh|dvh|svh|lvh|vb|dvb)\b/i);
+    expect(mayorWorkspaceStyles).not.toContain("--cc-size-mayor-transcript-max-block:");
+    expect(mayorWorkspaceStyles).toContain("max-block-size: calc(var(--cc-size-cockpit-tool-min) + var(--cc-size-cockpit-nav-max))");
   });
 
   it.each([

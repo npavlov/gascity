@@ -106,7 +106,7 @@ func registerMayor(api huma.API, opts Options) {
 			return nil, huma.Error503ServiceUnavailable("Control Center Mayor service is unavailable")
 		}
 		if input.RequestID != input.Body.RequestID {
-			return nil, huma.Error409Conflict("the interaction request ID changed")
+			return nil, mapMayorError(&mayor.Error{Code: "pending_interaction_changed", Detail: "the interaction request ID changed", StatusCode: http.StatusConflict})
 		}
 		if err := validateMayorInteraction(input.Body); err != nil {
 			return nil, err

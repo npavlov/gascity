@@ -114,7 +114,7 @@ func TestClientStreamSessionRejectsSemanticallyEmptyFacts(t *testing.T) {
 			}
 			stream, err := newFakeClient(t, &fakeSupervisorAPI{}, raw).StreamSession(context.Background(), "named")
 			require.NoError(t, err)
-			defer stream.Close()
+			defer func() { _ = stream.Close() }()
 
 			_, err = stream.Recv()
 			var upstream *UpstreamError
@@ -141,6 +141,40 @@ type blockingRefreshSnapshot struct {
 	mu               sync.Mutex
 	transcriptCalls  int
 	pendingCalls     int
+}
+
+type materializationSequenceSnapshot struct {
+	mu            sync.Mutex
+	snapshotViews []MayorView
+	snapshotCalls int
+	dormant       bool
+}
+
+func (f *materializationSequenceSnapshot) Identity() string { return "named" }
+
+func (f *materializationSequenceSnapshot) Get(context.Context) (MayorView, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.dormant {
+		return MayorView{Identity: "named", State: StateAvailableDormant}, nil
+	}
+	return MayorView{Identity: "named", State: StateIdle, Materialized: true}, nil
+}
+
+func (f *materializationSequenceSnapshot) Snapshot(context.Context, SnapshotOptions) (SnapshotResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	index := f.snapshotCalls
+	if index >= len(f.snapshotViews) {
+		index = len(f.snapshotViews) - 1
+	}
+	view := f.snapshotViews[index]
+	f.snapshotCalls++
+	if !view.Materialized {
+		f.dormant = true
+	}
+	page := TranscriptPage{Turns: []TranscriptTurn{}}
+	return SnapshotResult{View: view, Transcript: &page}, nil
 }
 
 func (f *blockingRefreshSnapshot) Identity() string { return f.view.Identity }
@@ -196,24 +230,28 @@ func (f *fakeSnapshot) Identity() string {
 	defer f.mu.Unlock()
 	return f.view.Identity
 }
+
 func (f *fakeSnapshot) Get(context.Context) (MayorView, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, "view")
 	return f.view, f.getErr
 }
+
 func (f *fakeSnapshot) Transcript(context.Context, string) (TranscriptPage, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, "transcript")
 	return TranscriptPage{Turns: []TranscriptTurn{}}, f.transcriptErr
 }
+
 func (f *fakeSnapshot) Pending(context.Context) (*PendingInteraction, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, "pending")
 	return nil, f.pendingErr
 }
+
 func (f *fakeSnapshot) Snapshot(ctx context.Context, options SnapshotOptions) (SnapshotResult, error) {
 	f.mu.Lock()
 	view := f.view
@@ -250,6 +288,7 @@ func (f *fakeSessionStream) Recv() (SessionEvent, error) {
 	}
 	return event, nil
 }
+
 func (f *fakeSessionStream) Close() error {
 	f.once.Do(func() {
 		close(f.events)
@@ -512,6 +551,71 @@ func TestHubDoesNotConsumeStreamWhenInitialRefreshFails(t *testing.T) {
 	assert.Zero(t, stream.recvCalls())
 }
 
+func TestHubSetupRefreshClosesStreamWhenMayorBecomesDormant(t *testing.T) {
+	stream := &fakeSessionStream{events: make(chan SessionEvent), closed: make(chan struct{})}
+	snapshot := &materializationSequenceSnapshot{snapshotViews: []MayorView{{Identity: "named", State: StateAvailableDormant}}}
+	hub, err := NewHub(snapshot, &fakeStreamSource{stream: stream})
+	require.NoError(t, err)
+	hub.pollInterval = time.Hour
+	subscription := hub.Subscribe()
+	defer subscription.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer func() {
+		cancel()
+		hub.Stop()
+	}()
+	require.NoError(t, hub.Start(ctx))
+
+	select {
+	case <-stream.closed:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("setup reconciliation did not close the stream after Mayor became dormant")
+	}
+	assert.Zero(t, stream.recvCalls())
+	eventCtx, stopEvent := context.WithTimeout(context.Background(), time.Second)
+	defer stopEvent()
+	event, err := subscription.Next(eventCtx)
+	require.NoError(t, err)
+	assert.Equal(t, "invalidate", event.Kind)
+	assert.Equal(t, []string{"mayor", "transcript", "pending"}, event.Resources)
+}
+
+func TestHubTrailingRefreshClosesStreamWhenMayorBecomesDormant(t *testing.T) {
+	stream := &fakeSessionStream{events: make(chan SessionEvent, 1), closed: make(chan struct{})}
+	snapshot := &materializationSequenceSnapshot{snapshotViews: []MayorView{
+		{Identity: "named", State: StateIdle, Materialized: true},
+		{Identity: "named", State: StateAvailableDormant},
+	}}
+	hub, err := NewHub(snapshot, &fakeStreamSource{stream: stream})
+	require.NoError(t, err)
+	hub.pollInterval = time.Hour
+	subscription := hub.Subscribe()
+	defer subscription.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer func() {
+		cancel()
+		hub.Stop()
+	}()
+	require.NoError(t, hub.Start(ctx))
+
+	eventCtx, stopEvent := context.WithTimeout(context.Background(), time.Second)
+	defer stopEvent()
+	initial, err := subscription.Next(eventCtx)
+	require.NoError(t, err)
+	assert.Equal(t, "invalidate", initial.Kind)
+	stream.events <- SessionEvent{Kind: "activity", Cursor: "turn-complete", Activity: "idle"}
+
+	select {
+	case <-stream.closed:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("trailing reconciliation did not close the stream after Mayor became dormant")
+	}
+	event, err := subscription.Next(eventCtx)
+	require.NoError(t, err)
+	assert.Equal(t, "invalidate", event.Kind)
+	assert.Equal(t, []string{"mayor", "transcript", "pending"}, event.Resources)
+}
+
 func TestHubStopWakesActiveBrowserSubscription(t *testing.T) {
 	stream := &fakeSessionStream{events: make(chan SessionEvent), closed: make(chan struct{})}
 	snapshot := &fakeSnapshot{view: MayorView{Identity: "named", State: StateIdle, Materialized: true}}
@@ -604,7 +708,7 @@ func TestHubRefreshTreatsUnsupportedPendingAsValidCapability(t *testing.T) {
 	subscription := hub.Subscribe()
 	defer subscription.Close()
 
-	assert.True(t, hub.refresh(context.Background()))
+	require.NoError(t, hub.refresh(context.Background()))
 	refreshCtx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	event, err := subscription.Next(refreshCtx)
@@ -625,7 +729,7 @@ func TestHubRefreshResolvesMayorIdentityOnceForTranscriptAndPending(t *testing.T
 	hub, err := NewHub(service, &fakeStreamSource{})
 	require.NoError(t, err)
 
-	assert.True(t, hub.refresh(context.Background()))
+	require.NoError(t, hub.refresh(context.Background()))
 	assert.Equal(t, 1, reader.statusCalls)
 	assert.Equal(t, 1, reader.sessionCalls)
 	assert.Equal(t, 1, reader.transcriptCalls)

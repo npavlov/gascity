@@ -71,7 +71,6 @@ export const connectMayorEvents: MayorStreamConnector = (callbacks) => {
   let source: MayorEventSourceLike | null = null;
   let reconnectTimer: number | null = null;
   let stopped = false;
-  let reconnecting = false;
   let attempt = 0;
   let disconnectCurrent: (() => void) | null = null;
 
@@ -79,6 +78,7 @@ export const connectMayorEvents: MayorStreamConnector = (callbacks) => {
     if (stopped) return;
     const current = new EventSource("/api/v1/mayor/events") as MayorEventSourceLike;
     source = current;
+    let opened = false;
     const onMayor = (frame: MessageEvent<string>) => {
       if (stopped || source !== current) return;
       try {
@@ -101,16 +101,14 @@ export const connectMayorEvents: MayorStreamConnector = (callbacks) => {
     };
     disconnectCurrent = disconnect;
     current.onopen = () => {
-      if (stopped || source !== current) return;
+      if (stopped || source !== current || opened) return;
+      opened = true;
       attempt = 0;
-      if (!reconnecting) return;
-      reconnecting = false;
       void callbacks.onReconnect().catch(() => callbacks.onStale());
     };
     current.onerror = () => {
       if (stopped || source !== current) return;
       callbacks.onStale();
-      reconnecting = true;
       disconnect();
       const delay = reconnectDelays[Math.min(attempt, reconnectDelays.length - 1)];
       attempt += 1;
@@ -152,6 +150,7 @@ export function useMayor({ api, connector = connectMayorEvents, requestRefresh }
   const [mutationError, setMutationError] = useState<string | null>(null);
   const [scrollOffset, setScrollOffset] = useState(0);
   const [loadingOlder, setLoadingOlder] = useState(false);
+  const [streamBarrierGeneration, setStreamBarrierGeneration] = useState<number | null>(null);
   const activeControllers = useRef(new Set<AbortController>());
   const lifecycleGeneration = useRef(0);
   const hasLastGood = useRef(false);
@@ -164,8 +163,30 @@ export function useMayor({ api, connector = connectMayorEvents, requestRefresh }
   const unconfirmedLiveTurns = useRef<LiveTurnRecord[]>([]);
   const loadedOlderTurns = useRef<TranscriptTurn[]>([]);
   const authoritativeTurnCounts = useRef<Map<string, number> | null>(null);
+  const turnsRef = useRef<TranscriptTurn[]>([]);
+  const activeSessionID = useRef<string | null>(null);
+  const hasSessionIdentity = useRef(false);
+  const sessionGeneration = useRef(0);
   const pendingRequestID = useRef<string | null>(null);
   const mutationActive = useRef(false);
+
+  const acceptSessionIdentity = useCallback((nextSessionID: string | null) => {
+    const changed = hasSessionIdentity.current && activeSessionID.current !== nextSessionID;
+    activeSessionID.current = nextSessionID;
+    hasSessionIdentity.current = true;
+    if (!changed) return;
+
+    sessionGeneration.current += 1;
+    loadedOlderTurns.current = [];
+    unconfirmedLiveTurns.current = [];
+    authoritativeTurnCounts.current = null;
+    turnsRef.current = [];
+    setTranscript(null);
+    setTurns([]);
+    setLiveTurn(null);
+    setScrollOffset(0);
+    setLoadingOlder(false);
+  }, []);
 
   const refreshSnapshots = useCallback(async (signal?: AbortSignal): Promise<boolean> => {
     if (!api) {
@@ -185,6 +206,7 @@ export function useMayor({ api, connector = connectMayorEvents, requestRefresh }
         try {
           const normalizedView = normalizeView(await api.getMayor(requestSignal));
           if (requestSignal.aborted || generation !== lifecycleGeneration.current || requestSerial !== viewRequestSerial.current) return false;
+          acceptSessionIdentity(normalizedView.session_id ?? null);
           setView((current) => preserveLiveView(normalizedView, current, startedAtRevision === liveViewRevision.current));
           hasLastGood.current = true;
           setStatusError(null);
@@ -205,7 +227,13 @@ export function useMayor({ api, connector = connectMayorEvents, requestRefresh }
       const settleTranscript = async (): Promise<boolean> => {
         try {
           const normalizedTranscript = normalizeTranscript(await api.getMayorTranscript(undefined, requestSignal));
-          if (requestSignal.aborted || generation !== lifecycleGeneration.current || transcriptSerial !== transcriptRequestSerial.current) return false;
+          await viewLane;
+          if (
+            requestSignal.aborted
+            || generation !== lifecycleGeneration.current
+            || requestSerial !== viewRequestSerial.current
+            || transcriptSerial !== transcriptRequestSerial.current
+          ) return false;
           const reconciliation = reconcileLiveTurns(
             normalizedTranscript.turns ?? [],
             unconfirmedLiveTurns.current,
@@ -213,12 +241,20 @@ export function useMayor({ api, connector = connectMayorEvents, requestRefresh }
           );
           unconfirmedLiveTurns.current = reconciliation.remaining;
           authoritativeTurnCounts.current = reconciliation.snapshotCounts;
+          const merged = mergeTranscriptPages(loadedOlderTurns.current, reconciliation.turns);
+          loadedOlderTurns.current = merged.added;
+          turnsRef.current = merged.turns;
           setTranscript(normalizedTranscript);
-          setTurns([...loadedOlderTurns.current, ...reconciliation.turns]);
+          setTurns(merged.turns);
           setSnapshotError(null);
           return true;
         } catch (cause) {
-          if (requestSignal.aborted || generation !== lifecycleGeneration.current || transcriptSerial !== transcriptRequestSerial.current) return false;
+          if (
+            requestSignal.aborted
+            || generation !== lifecycleGeneration.current
+            || requestSerial !== viewRequestSerial.current
+            || transcriptSerial !== transcriptRequestSerial.current
+          ) return false;
           setSnapshotError(errorMessage(cause));
           return false;
         }
@@ -233,6 +269,7 @@ export function useMayor({ api, connector = connectMayorEvents, requestRefresh }
       const confirmed = viewConfirmed && transcriptConfirmed;
       if (confirmed) {
         lastSnapshotConfirmedRevision.current = Math.max(lastSnapshotConfirmedRevision.current, demandRevision);
+        setStreamBarrierGeneration(generation);
         if (demandRevision === snapshotDemandRevision.current) setSnapshotStale(false);
       } else {
         setSnapshotStale(true);
@@ -241,7 +278,7 @@ export function useMayor({ api, connector = connectMayorEvents, requestRefresh }
     } finally {
       if (ownedController) activeControllers.current.delete(ownedController);
     }
-  }, [api]);
+  }, [acceptSessionIdentity, api]);
 
   const refreshStatus = useCallback(async (signal?: AbortSignal): Promise<boolean> => {
     if (!api) {
@@ -258,6 +295,7 @@ export function useMayor({ api, connector = connectMayorEvents, requestRefresh }
       const nextView = normalizeView(await api.getMayor(requestSignal));
       if (requestSignal.aborted || generation !== lifecycleGeneration.current) return false;
       if (requestSerial === viewRequestSerial.current) {
+        acceptSessionIdentity(nextView.session_id ?? null);
         setView((current) => preserveLiveView(nextView, current, startedAtRevision === liveViewRevision.current));
         hasLastGood.current = true;
         setStatusError(null);
@@ -278,7 +316,7 @@ export function useMayor({ api, connector = connectMayorEvents, requestRefresh }
     } finally {
       if (ownedController) activeControllers.current.delete(ownedController);
     }
-  }, [api]);
+  }, [acceptSessionIdentity, api]);
 
   const requestSnapshotRefresh = useCallback(async (): Promise<boolean> => {
     const demandRevision = ++snapshotDemandRevision.current;
@@ -299,8 +337,13 @@ export function useMayor({ api, connector = connectMayorEvents, requestRefresh }
     loadedOlderTurns.current = [];
     unconfirmedLiveTurns.current = [];
     authoritativeTurnCounts.current = null;
+    turnsRef.current = [];
+    activeSessionID.current = null;
+    hasSessionIdentity.current = false;
+    sessionGeneration.current += 1;
     queueMicrotask(() => {
-      if (active && generation === lifecycleGeneration.current) void refreshSnapshots();
+      if (!active || generation !== lifecycleGeneration.current) return;
+      void refreshSnapshots();
     });
     return () => {
       active = false;
@@ -329,7 +372,8 @@ export function useMayor({ api, connector = connectMayorEvents, requestRefresh }
     }
     if (event.kind === "turn" && event.turn) {
       unconfirmedLiveTurns.current.push({ turn: event.turn });
-      setTurns((current) => [...current, event.turn!]);
+      turnsRef.current = [...turnsRef.current, event.turn];
+      setTurns(turnsRef.current);
       setLiveTurn(event.turn);
       return;
     }
@@ -353,7 +397,7 @@ export function useMayor({ api, connector = connectMayorEvents, requestRefresh }
   }, [markStreamStale, requestSnapshotRefresh]);
 
   useEffect(() => {
-    if (!api) return;
+    if (!api || streamBarrierGeneration !== lifecycleGeneration.current) return;
     return connector({
       onEvent,
       onStale: markStreamStale,
@@ -363,24 +407,27 @@ export function useMayor({ api, connector = connectMayorEvents, requestRefresh }
         if (confirmed && startedAtRevision === streamRevision.current) setStreamStale(false);
       },
     });
-  }, [api, connector, markStreamStale, onEvent, requestSnapshotRefresh]);
+  }, [api, connector, markStreamStale, onEvent, requestSnapshotRefresh, streamBarrierGeneration]);
 
   const loadOlder = useCallback(async () => {
     if (!api || loadingOlder || !transcript?.has_older || !transcript.before) return;
     setLoadingOlder(true);
     const generation = lifecycleGeneration.current;
+    const pageSessionGeneration = sessionGeneration.current;
     try {
       const older = normalizeTranscript(await api.getMayorTranscript(transcript.before));
-      if (generation !== lifecycleGeneration.current) return;
+      if (generation !== lifecycleGeneration.current || pageSessionGeneration !== sessionGeneration.current) return;
       const olderTurns = older.turns ?? [];
-      loadedOlderTurns.current = [...olderTurns, ...loadedOlderTurns.current];
-      setTurns((current) => [...olderTurns, ...current]);
+      const merged = mergeTranscriptPages(olderTurns, turnsRef.current);
+      loadedOlderTurns.current = [...merged.added, ...loadedOlderTurns.current];
+      turnsRef.current = merged.turns;
+      setTurns(merged.turns);
       setTranscript((current) => current ? { ...current, has_older: older.has_older, before: older.before, total: Math.max(current.total, older.total), problems: [...(older.problems ?? []), ...(current.problems ?? [])] } : older);
     } catch (cause) {
-      if (generation !== lifecycleGeneration.current) return;
+      if (generation !== lifecycleGeneration.current || pageSessionGeneration !== sessionGeneration.current) return;
       setMutationError(errorMessage(cause));
     } finally {
-      if (generation === lifecycleGeneration.current) setLoadingOlder(false);
+      if (generation === lifecycleGeneration.current && pageSessionGeneration === sessionGeneration.current) setLoadingOlder(false);
     }
   }, [api, loadingOlder, transcript]);
 
@@ -482,6 +529,26 @@ function reconcileLiveTurns(
     return false;
   });
   return { turns: [...snapshot, ...remaining.map(({ turn }) => turn)], remaining, snapshotCounts };
+}
+
+function mergeTranscriptPages(
+  older: TranscriptTurn[],
+  current: TranscriptTurn[],
+): { turns: TranscriptTurn[]; added: TranscriptTurn[] } {
+  let overlap = Math.min(older.length, current.length);
+  while (overlap > 0) {
+    let matches = true;
+    for (let index = 0; index < overlap; index += 1) {
+      if (turnKey(older[older.length - overlap + index]) !== turnKey(current[index])) {
+        matches = false;
+        break;
+      }
+    }
+    if (matches) break;
+    overlap -= 1;
+  }
+  const added = older.slice(0, older.length - overlap);
+  return { added, turns: [...added, ...current] };
 }
 
 function turnKey(turn: TranscriptTurn): string {

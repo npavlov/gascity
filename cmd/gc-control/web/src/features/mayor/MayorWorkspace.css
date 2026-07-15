@@ -1,9 +1,4 @@
 .mayor-workspace {
-  --cc-size-mayor-transcript-max-block: min(
-    60dvb,
-    calc(var(--cc-size-cockpit-tool-min) + var(--cc-size-cockpit-nav-max))
-  );
-
   display: flex;
   flex-wrap: wrap;
   gap: var(--cc-space-4);
@@ -66,7 +61,7 @@
 
 .mayor-transcript {
   display: grid;
-  max-block-size: var(--cc-size-mayor-transcript-max-block);
+  max-block-size: calc(var(--cc-size-cockpit-tool-min) + var(--cc-size-cockpit-nav-max));
   overflow-y: auto;
   gap: var(--cc-space-3);
   padding: var(--cc-space-3);

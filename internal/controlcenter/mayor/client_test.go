@@ -26,18 +26,26 @@ type fakeSupervisorAPI struct {
 func (f *fakeSupervisorAPI) GetV0CityByCityNameStatusWithResponse(ctx context.Context, city string, params *genclient.GetV0CityByCityNameStatusParams, _ ...genclient.RequestEditorFn) (*genclient.GetV0CityByCityNameStatusResponse, error) {
 	return f.statusFn(ctx, city, params)
 }
+
+//nolint:revive // Name is fixed by the generated Supervisor API.
 func (f *fakeSupervisorAPI) GetV0CityByCityNameSessionByIdWithResponse(ctx context.Context, city, id string, params *genclient.GetV0CityByCityNameSessionByIdParams, _ ...genclient.RequestEditorFn) (*genclient.GetV0CityByCityNameSessionByIdResponse, error) {
 	return f.sessionFn(ctx, city, id, params)
 }
+
+//nolint:revive // Name is fixed by the generated Supervisor API.
 func (f *fakeSupervisorAPI) GetV0CityByCityNameSessionByIdTranscriptWithResponse(ctx context.Context, city, id string, params *genclient.GetV0CityByCityNameSessionByIdTranscriptParams, _ ...genclient.RequestEditorFn) (*genclient.GetV0CityByCityNameSessionByIdTranscriptResponse, error) {
 	return f.transcriptFn(ctx, city, id, params)
 }
+
+//nolint:revive // Name is fixed by the generated Supervisor API.
 func (f *fakeSupervisorAPI) GetV0CityByCityNameSessionByIdPendingWithResponse(ctx context.Context, city, id string, _ ...genclient.RequestEditorFn) (*genclient.GetV0CityByCityNameSessionByIdPendingResponse, error) {
 	return f.pendingFn(ctx, city, id)
 }
+
 func (f *fakeSupervisorAPI) SubmitSessionWithResponse(ctx context.Context, city, id string, params *genclient.SubmitSessionParams, body genclient.SubmitSessionJSONRequestBody, _ ...genclient.RequestEditorFn) (*genclient.SubmitSessionResponse, error) {
 	return f.submitFn(ctx, city, id, params, body)
 }
+
 func (f *fakeSupervisorAPI) RespondSessionWithResponse(ctx context.Context, city, id string, params *genclient.RespondSessionParams, body genclient.RespondSessionJSONRequestBody, _ ...genclient.RequestEditorFn) (*genclient.RespondSessionResponse, error) {
 	return f.respondFn(ctx, city, id, params, body)
 }
@@ -50,6 +58,7 @@ type fakeRawAPI struct {
 func (f *fakeRawAPI) StreamSession(ctx context.Context, city, id string, params *genclient.StreamSessionParams, _ ...genclient.RequestEditorFn) (*http.Response, error) {
 	return f.sessionFn(ctx, city, id, params)
 }
+
 func (f *fakeRawAPI) StreamEvents(ctx context.Context, city string, params *genclient.StreamEventsParams, _ ...genclient.RequestEditorFn) (*http.Response, error) {
 	return f.eventsFn(ctx, city, params)
 }

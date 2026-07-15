@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/gastownhall/gascity/internal/api/genclient"
 	"github.com/stretchr/testify/assert"
@@ -24,6 +26,72 @@ type fakeReader struct {
 	sessionCalls    int
 	transcriptCalls int
 	pendingCalls    int
+}
+
+type interleavedPendingReader struct {
+	mu                sync.Mutex
+	disconnected      bool
+	sessionCalls      int
+	pendingCalls      int
+	oldPendingStarted chan struct{}
+	releaseOldPending chan struct{}
+	releaseOnce       sync.Once
+}
+
+func newInterleavedPendingReader() *interleavedPendingReader {
+	return &interleavedPendingReader{
+		oldPendingStarted: make(chan struct{}),
+		releaseOldPending: make(chan struct{}),
+	}
+}
+
+func (f *interleavedPendingReader) Status(context.Context) (StatusSource, error) {
+	f.mu.Lock()
+	disconnected := f.disconnected
+	f.mu.Unlock()
+	if disconnected {
+		return StatusSource{}, errors.New("Supervisor offline")
+	}
+	return StatusSource{NamedSessions: []NamedSessionSource{{Identity: "named", Status: "materialized"}}}, nil
+}
+
+func (f *interleavedPendingReader) Session(context.Context, string) (SessionSource, error) {
+	f.mu.Lock()
+	f.sessionCalls++
+	call := f.sessionCalls
+	f.mu.Unlock()
+	sessionID := "session-new"
+	if call == 1 {
+		sessionID = "session-old"
+	}
+	return SessionSource{ID: sessionID, State: "active", Activity: "idle", Running: true, ConfiguredNamedSession: configured(true)}, nil
+}
+
+func (f *interleavedPendingReader) Transcript(context.Context, string, string) (TranscriptPageSource, error) {
+	return TranscriptPageSource{}, nil
+}
+
+func (f *interleavedPendingReader) Pending(context.Context, string) (PendingSource, error) {
+	f.mu.Lock()
+	f.pendingCalls++
+	call := f.pendingCalls
+	f.mu.Unlock()
+	if call == 1 {
+		close(f.oldPendingStarted)
+		<-f.releaseOldPending
+		return PendingSource{Supported: true, Pending: &PendingInteraction{RequestID: "prompt-old", Kind: "question"}}, nil
+	}
+	return PendingSource{Supported: true, Pending: &PendingInteraction{RequestID: "prompt-new", Kind: "question"}}, nil
+}
+
+func (f *interleavedPendingReader) disconnect() {
+	f.mu.Lock()
+	f.disconnected = true
+	f.mu.Unlock()
+}
+
+func (f *interleavedPendingReader) releasePending() {
+	f.releaseOnce.Do(func() { close(f.releaseOldPending) })
 }
 
 func (f *fakeReader) Status(context.Context) (StatusSource, error) {
@@ -246,6 +314,123 @@ func TestPendingUnsupportedIsAValidNoPromptCapability(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, pending)
 	assert.Equal(t, 1, reader.pendingCalls)
+}
+
+func TestSnapshotCachesConfirmedPendingAcrossStatusDisconnect(t *testing.T) {
+	reader := &fakeReader{
+		status:  StatusSource{NamedSessions: []NamedSessionSource{{Identity: "named", Status: "materialized"}}},
+		session: SessionSource{ID: "session-1", State: "active", Activity: "idle", Running: true, ConfiguredNamedSession: configured(true)},
+		pending: PendingSource{Supported: true, Pending: &PendingInteraction{RequestID: "pending-1", Kind: "question"}},
+	}
+	service, err := NewService("named", reader, &fakeCommander{})
+	require.NoError(t, err)
+
+	connected, err := service.Snapshot(context.Background(), SnapshotOptions{AllowStale: true, IncludePending: true})
+	require.NoError(t, err)
+	require.NotNil(t, connected.View.Pending)
+	assert.Equal(t, "pending-1", connected.View.Pending.RequestID)
+
+	reader.statusErr = errors.New("Supervisor offline")
+	stale, err := service.Snapshot(context.Background(), SnapshotOptions{AllowStale: true, IncludePending: true})
+	require.NoError(t, err)
+	assert.True(t, stale.View.Stale)
+	require.NotNil(t, stale.View.Pending)
+	assert.Equal(t, "pending-1", stale.View.Pending.RequestID)
+	require.NotNil(t, stale.Pending)
+	assert.Equal(t, "pending-1", stale.Pending.RequestID)
+	assert.Equal(t, 1, reader.pendingCalls)
+}
+
+func TestSnapshotPendingEnrichmentCannotOverwriteNewerSessionCache(t *testing.T) {
+	reader := newInterleavedPendingReader()
+	defer reader.releasePending()
+	service, err := NewService("named", reader, &fakeCommander{})
+	require.NoError(t, err)
+
+	type snapshotOutcome struct {
+		result SnapshotResult
+		err    error
+	}
+	oldSnapshot := make(chan snapshotOutcome, 1)
+	go func() {
+		result, snapshotErr := service.Snapshot(context.Background(), SnapshotOptions{AllowStale: true, IncludePending: true})
+		oldSnapshot <- snapshotOutcome{result: result, err: snapshotErr}
+	}()
+
+	select {
+	case <-reader.oldPendingStarted:
+	case <-time.After(time.Second):
+		t.Fatal("old-session pending read did not block")
+	}
+
+	newer, err := service.Snapshot(context.Background(), SnapshotOptions{AllowStale: true, IncludePending: true})
+	require.NoError(t, err)
+	assert.Equal(t, "session-new", newer.View.SessionID)
+	require.NotNil(t, newer.View.Pending)
+	assert.Equal(t, "prompt-new", newer.View.Pending.RequestID)
+
+	reader.releasePending()
+	select {
+	case outcome := <-oldSnapshot:
+		require.NoError(t, outcome.err)
+		assert.Equal(t, "session-old", outcome.result.View.SessionID)
+	case <-time.After(time.Second):
+		t.Fatal("old-session snapshot did not finish")
+	}
+
+	reader.disconnect()
+	stale, err := service.Get(context.Background())
+	require.NoError(t, err)
+	assert.True(t, stale.Stale)
+	assert.Equal(t, "session-new", stale.SessionID)
+	require.NotNil(t, stale.Pending)
+	assert.Equal(t, "prompt-new", stale.Pending.RequestID)
+}
+
+func TestTranscriptReadDoesNotEraseCachedPending(t *testing.T) {
+	reader := &fakeReader{
+		status:     StatusSource{NamedSessions: []NamedSessionSource{{Identity: "named", Status: "materialized"}}},
+		session:    SessionSource{ID: "session-1", State: "active", Activity: "idle", Running: true, ConfiguredNamedSession: configured(true)},
+		pending:    PendingSource{Supported: true, Pending: &PendingInteraction{RequestID: "pending-1", Kind: "question"}},
+		transcript: TranscriptPageSource{Turns: []TranscriptTurn{{Role: "assistant", Text: "still here"}}},
+	}
+	service, err := NewService("named", reader, &fakeCommander{})
+	require.NoError(t, err)
+	_, err = service.Snapshot(context.Background(), SnapshotOptions{AllowStale: true, IncludePending: true})
+	require.NoError(t, err)
+
+	_, err = service.Transcript(context.Background(), "")
+	require.NoError(t, err)
+	reader.statusErr = errors.New("Supervisor offline")
+
+	stale, err := service.Get(context.Background())
+	require.NoError(t, err)
+	require.NotNil(t, stale.Pending)
+	assert.Equal(t, "pending-1", stale.Pending.RequestID)
+}
+
+func TestTranscriptMergesDiscoveryAndTranscriptDegradation(t *testing.T) {
+	reader := &fakeReader{
+		status: StatusSource{
+			NamedSessions: []NamedSessionSource{{Identity: "named", Status: "materialized"}},
+			Partial:       true,
+			Problems:      []MayorProblem{{Code: "status_partial", Source: "status", Detail: "mail unavailable", Retryable: true}},
+		},
+		session: SessionSource{ID: "session-1", State: "active", Activity: "idle", Running: true, ConfiguredNamedSession: configured(true)},
+		transcript: TranscriptPageSource{
+			Turns:    []TranscriptTurn{{Role: "assistant", Text: "hello"}},
+			Problems: []MayorProblem{{Code: "transcript_timestamp", Source: "transcript", Detail: "invalid timestamp"}},
+		},
+	}
+	service, err := NewService("named", reader, &fakeCommander{})
+	require.NoError(t, err)
+
+	page, err := service.Transcript(context.Background(), "")
+	require.NoError(t, err)
+	assert.True(t, page.Degraded)
+	require.Len(t, page.Problems, 2)
+	assert.Equal(t, "status_partial", page.Problems[0].Code)
+	assert.Equal(t, "transcript_timestamp", page.Problems[1].Code)
 }
 
 func TestResolveDisconnectedUsesLastGoodAsStale(t *testing.T) {

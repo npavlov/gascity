@@ -28,14 +28,17 @@ func (r *mayorReader) Status(context.Context) (mayor.StatusSource, error) {
 	r.statusCalls++
 	return r.status, nil
 }
+
 func (r *mayorReader) Session(context.Context, string) (mayor.SessionSource, error) {
 	r.sessionCalls++
 	return r.session, nil
 }
+
 func (r *mayorReader) Transcript(context.Context, string, string) (mayor.TranscriptPageSource, error) {
 	r.transcriptCalls++
 	return r.transcript, nil
 }
+
 func (r *mayorReader) Pending(context.Context, string) (mayor.PendingSource, error) {
 	r.pendingCalls++
 	return r.pending, nil
@@ -50,9 +53,11 @@ func (c *mayorCommander) Submit(_ context.Context, _, _ string, intent mayor.Sub
 	c.intent = intent
 	return mayor.AcceptedSource{RequestID: "request-1", EventCursor: "7", Status: "accepted"}, nil
 }
+
 func (c *mayorCommander) AwaitSubmit(context.Context, string, string, string) (mayor.SubmitResult, error) {
 	return mayor.SubmitResult{RequestID: "request-1", SessionID: "session-1", Status: "succeeded", Intent: c.intent}, nil
 }
+
 func (c *mayorCommander) Respond(_ context.Context, _ string, input mayor.ResponseInput) (mayor.ResponseReceipt, error) {
 	c.responseInputs = append(c.responseInputs, input)
 	return mayor.ResponseReceipt{SessionID: "session-1", Status: "accepted"}, nil
@@ -60,19 +65,19 @@ func (c *mayorCommander) Respond(_ context.Context, _ string, input mayor.Respon
 
 func boolPointer(value bool) *bool { return &value }
 
-func mayorAPI(t *testing.T, reader *mayorReader, commander *mayorCommander) (*http.ServeMux, *mayor.Service) {
+func mayorAPI(t *testing.T, reader *mayorReader, commander *mayorCommander) *http.ServeMux {
 	t.Helper()
 	service, err := mayor.NewService("pack/named.overseer", reader, commander)
 	require.NoError(t, err)
 	mux := http.NewServeMux()
 	Register(mux, Options{Mayor: service})
-	return mux, service
+	return mux
 }
 
 func TestMayorRoutesDormantAndMissing(t *testing.T) {
 	t.Run("dormant is 200", func(t *testing.T) {
 		reader := &mayorReader{status: mayor.StatusSource{NamedSessions: []mayor.NamedSessionSource{{Identity: "pack/named.overseer", Mode: "on-demand", Status: "reserved-unmaterialized"}}}}
-		mux, _ := mayorAPI(t, reader, &mayorCommander{})
+		mux := mayorAPI(t, reader, &mayorCommander{})
 		recorder := httptest.NewRecorder()
 		mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/mayor", nil))
 		assert.Equal(t, http.StatusOK, recorder.Code)
@@ -82,7 +87,7 @@ func TestMayorRoutesDormantAndMissing(t *testing.T) {
 	})
 
 	t.Run("missing is 409", func(t *testing.T) {
-		mux, _ := mayorAPI(t, &mayorReader{}, &mayorCommander{})
+		mux := mayorAPI(t, &mayorReader{}, &mayorCommander{})
 		recorder := httptest.NewRecorder()
 		mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/mayor", nil))
 		assert.Equal(t, http.StatusConflict, recorder.Code)
@@ -93,7 +98,7 @@ func TestMayorRoutesDormantAndMissing(t *testing.T) {
 
 	t.Run("ambiguous carries a stable problem code", func(t *testing.T) {
 		reader := &mayorReader{status: mayor.StatusSource{NamedSessions: []mayor.NamedSessionSource{{Identity: "pack/named.overseer"}, {Identity: "pack/named.overseer"}}}}
-		mux, _ := mayorAPI(t, reader, &mayorCommander{})
+		mux := mayorAPI(t, reader, &mayorCommander{})
 		recorder := httptest.NewRecorder()
 		mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/mayor", nil))
 		assert.Equal(t, http.StatusConflict, recorder.Code)
@@ -110,7 +115,7 @@ func TestMayorTranscriptAndMessageHideIntent(t *testing.T) {
 		transcript: mayor.TranscriptPageSource{Turns: []mayor.TranscriptTurn{{Role: "assistant", Text: "hello"}}, Returned: 1, Total: 1},
 	}
 	commander := &mayorCommander{}
-	mux, _ := mayorAPI(t, reader, commander)
+	mux := mayorAPI(t, reader, commander)
 
 	recorder := httptest.NewRecorder()
 	mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/mayor/transcript", nil))
@@ -135,7 +140,7 @@ func TestMayorViewResolvesIdentityOnceWhileLoadingPending(t *testing.T) {
 		session: mayor.SessionSource{ID: "session-1", State: "active", Activity: "idle", Running: true, ConfiguredNamedSession: boolPointer(true)},
 		pending: mayor.PendingSource{Supported: true, Pending: &mayor.PendingInteraction{RequestID: "pending-1", Kind: "question"}},
 	}
-	mux, _ := mayorAPI(t, reader, &mayorCommander{})
+	mux := mayorAPI(t, reader, &mayorCommander{})
 	recorder := httptest.NewRecorder()
 	mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/mayor", nil))
 	require.Equal(t, http.StatusOK, recorder.Code)
@@ -152,7 +157,7 @@ func TestMayorInputLimitsAndPendingBinding(t *testing.T) {
 		pending: mayor.PendingSource{Supported: true, Pending: &mayor.PendingInteraction{RequestID: "current", Kind: "question"}},
 	}
 	commander := &mayorCommander{}
-	mux, _ := mayorAPI(t, reader, commander)
+	mux := mayorAPI(t, reader, commander)
 
 	for name, body := range map[string]string{
 		"empty message": `{"message":""}`,
@@ -170,6 +175,55 @@ func TestMayorInputLimitsAndPendingBinding(t *testing.T) {
 	mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/mayor/interactions/old", strings.NewReader(interaction)))
 	assert.Equal(t, http.StatusConflict, recorder.Code)
 	assert.Empty(t, commander.responseInputs)
+}
+
+func TestMayorInteractionConflictsUseStablePendingChangedProblem(t *testing.T) {
+	tests := []struct {
+		name    string
+		pathID  string
+		bodyID  string
+		pending mayor.PendingSource
+	}{
+		{
+			name:    "route and body request IDs differ",
+			pathID:  "current",
+			bodyID:  "other",
+			pending: mayor.PendingSource{Supported: true, Pending: &mayor.PendingInteraction{RequestID: "current", Kind: "question"}},
+		},
+		{
+			name:    "current pending interaction is absent",
+			pathID:  "current",
+			bodyID:  "current",
+			pending: mayor.PendingSource{Supported: true},
+		},
+		{
+			name:    "current pending interaction changed",
+			pathID:  "old",
+			bodyID:  "old",
+			pending: mayor.PendingSource{Supported: true, Pending: &mayor.PendingInteraction{RequestID: "new", Kind: "question"}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reader := &mayorReader{
+				status:  mayor.StatusSource{NamedSessions: []mayor.NamedSessionSource{{Identity: "pack/named.overseer", Status: "materialized"}}},
+				session: mayor.SessionSource{ID: "session-1", State: "active", Activity: "idle", ConfiguredNamedSession: boolPointer(true)},
+				pending: tt.pending,
+			}
+			commander := &mayorCommander{}
+			mux := mayorAPI(t, reader, commander)
+			body := strings.NewReader(`{"request_id":"` + tt.bodyID + `","action":"allow"}`)
+			recorder := httptest.NewRecorder()
+			mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/mayor/interactions/"+tt.pathID, body))
+
+			require.Equal(t, http.StatusConflict, recorder.Code)
+			var problem huma.ErrorModel
+			require.NoError(t, json.NewDecoder(recorder.Body).Decode(&problem))
+			assert.Equal(t, "urn:gascity:control-center:mayor:pending_interaction_changed", problem.Type)
+			assert.Empty(t, commander.responseInputs)
+		})
+	}
 }
 
 func TestMayorOpenAPIRegistersDistinctProblemAndSSE(t *testing.T) {
