@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { MailAPI, MailCount, MailMessage, MailThread } from "@/lib/api";
 import { ControlCenterAPIError } from "@/lib/api";
-import { createRefreshQueue } from "@/lib/events";
 
 import {
   appendMailPage,
@@ -36,9 +35,10 @@ interface MailErrors {
 
 export interface UseMailOptions {
   api: MailAPI | null;
-  active: boolean;
-  pollInterval?: number;
+  requestRefresh(resources: MailRefreshResource[]): void;
 }
+
+export type MailRefreshResource = "count" | "snapshots";
 
 export interface MailModel {
   collection: MailCollection;
@@ -48,11 +48,15 @@ export interface MailModel {
   loading: MailLoading;
   errors: MailErrors;
   stale: boolean;
+  countStale: boolean;
+  snapshotsStale: boolean;
   disconnected: boolean;
   setFilter(filter: MailFilter): void;
   select(identity: MailIdentity): void;
   loadMore(): void;
   refresh(): void;
+  refreshCount(signal?: AbortSignal): Promise<boolean>;
+  refreshSnapshots(signal?: AbortSignal): Promise<boolean>;
   onInvalidation(): void;
   onDisconnect(): void;
   onReconnect(): void;
@@ -84,33 +88,64 @@ function requestStatus(error: unknown) {
   return error instanceof ControlCenterAPIError ? error.status : undefined;
 }
 
-export function useMail({ api, active, pollInterval = 10_000 }: UseMailOptions): MailModel {
+export function useMail({ api, requestRefresh }: UseMailOptions): MailModel {
   const [collection, setCollection] = useState<MailCollection>(createMailCollection);
   const [count, setCount] = useState<MailCount | null>(null);
   const [detail, setDetail] = useState<Identified<MailMessage> | null>(null);
   const [thread, setThread] = useState<Identified<MailThread> | null>(null);
   const [loading, setLoading] = useState<MailLoading>(initialLoading);
   const [errors, setErrors] = useState<MailErrors>(initialErrors);
-  const [stale, setStale] = useState(false);
+  const [countStale, setCountStale] = useState(false);
+  const [listStale, setListStale] = useState(false);
+  const [selectionStale, setSelectionStale] = useState(false);
   const [disconnected, setDisconnected] = useState(false);
 
   const mounted = useRef(true);
-  const activeRef = useRef(active);
-  const previousActive = useRef(active);
   const collectionRef = useRef(collection);
   const detailRef = useRef(detail);
   const threadRef = useRef(thread);
-  const disconnectedRef = useRef(disconnected);
-  const invalidSnapshots = useRef(false);
+  const countStaleRef = useRef(false);
+  const listStaleRef = useRef(false);
+  const selectionStaleRef = useRef(false);
+  const reconnectingRef = useRef(false);
   const snapshotGeneration = useRef(0);
-  const queueRef = useRef<ReturnType<typeof createRefreshQueue> | null>(null);
   const countController = useRef<AbortController | null>(null);
   const listController = useRef<AbortController | null>(null);
   const selectionController = useRef<AbortController | null>(null);
 
-  useEffect(() => {
-    activeRef.current = active;
-  }, [active]);
+  const invalidateInFlight = useCallback(() => {
+    snapshotGeneration.current += 1;
+    countController.current?.abort();
+    listController.current?.abort();
+    selectionController.current?.abort();
+  }, []);
+
+  const maybeFinishReconnect = useCallback(() => {
+    if (
+      reconnectingRef.current
+      && !countStaleRef.current
+      && !listStaleRef.current
+      && !selectionStaleRef.current
+    ) {
+      reconnectingRef.current = false;
+      if (mounted.current) setDisconnected(false);
+    }
+  }, []);
+
+  const markCountStale = useCallback((value: boolean) => {
+    countStaleRef.current = value;
+    if (mounted.current) setCountStale(value);
+  }, []);
+
+  const markListStale = useCallback((value: boolean) => {
+    listStaleRef.current = value;
+    if (mounted.current) setListStale(value);
+  }, []);
+
+  const markSelectionStale = useCallback((value: boolean) => {
+    selectionStaleRef.current = value;
+    if (mounted.current) setSelectionStale(value);
+  }, []);
 
   const updateCollection = useCallback((next: MailCollection) => {
     collectionRef.current = next;
@@ -140,11 +175,13 @@ export function useMail({ api, active, pollInterval = 10_000 }: UseMailOptions):
       const next = await api.getMailCount(controller.signal);
       if (controller.signal.aborted || countController.current !== controller || !mounted.current) return false;
       setCount(next);
+      markCountStale(false);
+      maybeFinishReconnect();
       return true;
     } catch (error) {
       if (!controller.signal.aborted && !isAbort(error) && mounted.current) {
         setErrors((current) => ({ ...current, count: true }));
-        setStale(true);
+        markCountStale(true);
       }
       return false;
     } finally {
@@ -153,7 +190,7 @@ export function useMail({ api, active, pollInterval = 10_000 }: UseMailOptions):
         setLoading((current) => ({ ...current, count: false }));
       }
     }
-  }, [api]);
+  }, [api, markCountStale, maybeFinishReconnect]);
 
   const loadSelected = useCallback(async (identity: MailIdentity | null, parentSignal?: AbortSignal) => {
     selectionController.current?.abort();
@@ -164,6 +201,8 @@ export function useMail({ api, active, pollInterval = 10_000 }: UseMailOptions):
         setLoading((current) => ({ ...current, detail: false, thread: false }));
         setErrors((current) => ({ ...current, detail: false, thread: false, notFound: false }));
       }
+      markSelectionStale(false);
+      maybeFinishReconnect();
       return true;
     }
     const { controller, detach } = linkedController(parentSignal);
@@ -196,12 +235,17 @@ export function useMail({ api, active, pollInterval = 10_000 }: UseMailOptions):
       setErrors((current) => ({ ...current, thread: true }));
     }
     setLoading((current) => ({ ...current, detail: false, thread: false }));
-    if (!confirmed) setStale(true);
+    markSelectionStale(!confirmed);
+    maybeFinishReconnect();
     return confirmed;
-  }, [api, updateDetail, updateThread]);
+  }, [api, markSelectionStale, maybeFinishReconnect, updateDetail, updateThread]);
 
   const refreshSnapshots = useCallback(async (parentSignal?: AbortSignal) => {
     if (!api) return false;
+    const requiresFullRevalidation = listStaleRef.current || selectionStaleRef.current || reconnectingRef.current;
+    if (requiresFullRevalidation) {
+      markSelectionStale(true);
+    }
     listController.current?.abort();
     selectionController.current?.abort();
     const generation = ++snapshotGeneration.current;
@@ -230,11 +274,12 @@ export function useMail({ api, active, pollInterval = 10_000 }: UseMailOptions):
       if (latest.filter !== requestedFilter) return false;
       next = replaceMailPages(latest, requestedFilter, pages);
       updateCollection(next);
-      invalidSnapshots.current = false;
+      if (requiresFullRevalidation) markSelectionStale(true);
+      markListStale(false);
     } catch (error) {
       if (!controller.signal.aborted && !isAbort(error) && mounted.current) {
         setErrors((value) => ({ ...value, list: true }));
-        setStale(true);
+        markListStale(true);
       }
       return false;
     } finally {
@@ -244,59 +289,24 @@ export function useMail({ api, active, pollInterval = 10_000 }: UseMailOptions):
       }
     }
     return loadSelected(next.selected, parentSignal);
-  }, [api, loadSelected, updateCollection]);
+  }, [api, loadSelected, markListStale, markSelectionStale, updateCollection]);
 
   useEffect(() => {
     mounted.current = true;
-    if (!api) return () => { mounted.current = false; };
-    const queue = createRefreshQueue(async (resources, signal) => {
-      const requested = new Set(resources);
-      const results: boolean[] = [];
-      if (requested.has("count")) results.push(await refreshCount(signal));
-      if (requested.has("snapshots")) results.push(await refreshSnapshots(signal));
-      const confirmed = results.length > 0 && results.every(Boolean);
-      if (requested.has("reconnect")) {
-        if (mounted.current) setDisconnected(false);
-        disconnectedRef.current = false;
-      }
-      if (confirmed && !invalidSnapshots.current && !disconnectedRef.current && mounted.current) setStale(false);
-    });
-    queueRef.current = queue;
-    queue.request(activeRef.current ? ["count", "snapshots"] : ["count"]);
-
-    const requestVisible = () => {
-      if (document.visibilityState !== "visible") return;
-      queue.request(activeRef.current ? ["count", "snapshots"] : ["count"]);
-    };
-    const interval = window.setInterval(requestVisible, pollInterval);
-    window.addEventListener("focus", requestVisible);
-    const onVisibility = () => {
-      if (document.visibilityState === "visible") requestVisible();
-    };
-    document.addEventListener("visibilitychange", onVisibility);
     return () => {
       mounted.current = false;
-      window.clearInterval(interval);
-      window.removeEventListener("focus", requestVisible);
-      document.removeEventListener("visibilitychange", onVisibility);
-      queue.dispose();
-      if (queueRef.current === queue) queueRef.current = null;
       countController.current?.abort();
       listController.current?.abort();
       selectionController.current?.abort();
     };
-  }, [api, pollInterval, refreshCount, refreshSnapshots]);
-
-  useEffect(() => {
-    const becameActive = active && !previousActive.current;
-    previousActive.current = active;
-    if (becameActive) queueRef.current?.request(["snapshots"]);
-  }, [active]);
+  }, [api]);
 
   const setFilter = useCallback((filter: MailFilter) => {
     if (filter === collectionRef.current.filter) return;
     snapshotGeneration.current += 1;
     listController.current?.abort();
+    markListStale(true);
+    markSelectionStale(true);
     updateCollection({
       ...collectionRef.current,
       filter,
@@ -305,9 +315,8 @@ export function useMail({ api, active, pollInterval = 10_000 }: UseMailOptions):
       total: 0,
       nextCursor: "",
     });
-    invalidSnapshots.current = true;
-    queueRef.current?.request(["snapshots"]);
-  }, [updateCollection]);
+    requestRefresh(["snapshots"]);
+  }, [markListStale, markSelectionStale, requestRefresh, updateCollection]);
 
   const select = useCallback((identity: MailIdentity) => {
     const next = selectMail(collectionRef.current, identity);
@@ -333,35 +342,45 @@ export function useMail({ api, active, pollInterval = 10_000 }: UseMailOptions):
     }).catch((error: unknown) => {
       if (!controller.signal.aborted && !isAbort(error) && mounted.current) {
         setErrors((value) => ({ ...value, list: true }));
-        setStale(true);
+        markListStale(true);
       }
     }).finally(() => {
       if (listController.current === controller && mounted.current) setLoading((value) => ({ ...value, list: false }));
     });
-  }, [api, updateCollection]);
+  }, [api, markListStale, updateCollection]);
 
   const refresh = useCallback(() => {
-    queueRef.current?.request(["count", "snapshots"]);
-  }, []);
+    requestRefresh(["count", "snapshots"]);
+  }, [requestRefresh]);
 
   const onInvalidation = useCallback(() => {
-    invalidSnapshots.current = true;
-    if (mounted.current) setStale(true);
-    queueRef.current?.request(activeRef.current ? ["count", "snapshots"] : ["count"]);
-  }, []);
+    invalidateInFlight();
+    markCountStale(true);
+    markListStale(true);
+    markSelectionStale(true);
+  }, [invalidateInFlight, markCountStale, markListStale, markSelectionStale]);
 
   const onDisconnect = useCallback(() => {
-    disconnectedRef.current = true;
+    invalidateInFlight();
+    reconnectingRef.current = false;
     if (mounted.current) {
       setDisconnected(true);
-      setStale(true);
     }
-  }, []);
+    markCountStale(true);
+    markListStale(true);
+    markSelectionStale(true);
+  }, [invalidateInFlight, markCountStale, markListStale, markSelectionStale]);
 
   const onReconnect = useCallback(() => {
-    invalidSnapshots.current = true;
-    queueRef.current?.request(["count", "snapshots", "reconnect"]);
-  }, []);
+    invalidateInFlight();
+    reconnectingRef.current = true;
+    markCountStale(true);
+    markListStale(true);
+    markSelectionStale(true);
+  }, [invalidateInFlight, markCountStale, markListStale, markSelectionStale]);
+
+  const snapshotsStale = listStale || selectionStale;
+  const stale = countStale || snapshotsStale || disconnected;
 
   return {
     collection,
@@ -371,11 +390,15 @@ export function useMail({ api, active, pollInterval = 10_000 }: UseMailOptions):
     loading,
     errors,
     stale,
+    countStale,
+    snapshotsStale,
     disconnected,
     setFilter,
     select,
     loadMore,
     refresh,
+    refreshCount,
+    refreshSnapshots,
     onInvalidation,
     onDisconnect,
     onReconnect,

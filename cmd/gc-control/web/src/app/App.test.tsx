@@ -12,6 +12,7 @@ import type {
   ConvoysAPI,
   Health,
   MailAPI,
+  MailCount,
   MailMessage,
   MailPage,
   MailThread,
@@ -131,6 +132,12 @@ function mailFacet(overrides: Partial<MailAPI> = {}): MailAPI {
   };
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((next) => { resolve = next; });
+  return { promise, resolve };
+}
+
 describe("App", () => {
   it("shows an accessible loading state while health is pending", () => {
     render(<App api={fakeAPI(new Promise<Health>(() => undefined))} />);
@@ -245,6 +252,119 @@ describe("App", () => {
       await Promise.resolve();
     });
     expect(vi.mocked(mail.getMailCount).mock.calls.length).toBeGreaterThan(beforeReconnect);
+  });
+
+  it("uses one visible-document polling interval for count on every tab and snapshots only on Mail", async () => {
+    vi.useFakeTimers();
+    const intervalSpy = vi.spyOn(window, "setInterval");
+    const mail = mailFacet();
+    const factory: EventSourceFactory = () => ({
+      onerror: null,
+      addEventListener() { return undefined; },
+      removeEventListener() { return undefined; },
+      close() { return undefined; },
+    });
+    render(<App api={fullAPI(mail)} eventSourceFactory={factory} pollInterval={10_000} />);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(intervalSpy.mock.calls.filter(([, delay]) => delay === 10_000)).toHaveLength(1);
+    vi.mocked(mail.getMailCount).mockClear();
+    vi.mocked(mail.listMail).mockClear();
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+    expect(mail.getMailCount).toHaveBeenCalledOnce();
+    expect(mail.listMail).not.toHaveBeenCalled();
+
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "Mail" }), { button: 0, ctrlKey: false });
+    await act(async () => {
+      for (let index = 0; index < 20; index += 1) await Promise.resolve();
+    });
+    expect(screen.getByRole("tab", { name: "Mail" })).toHaveAttribute("aria-selected", "true");
+    expect(mail.listMail).toHaveBeenCalledOnce();
+    vi.mocked(mail.getMailCount).mockClear();
+    vi.mocked(mail.listMail).mockClear();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+      for (let index = 0; index < 20; index += 1) await Promise.resolve();
+    });
+    expect(mail.getMailCount).toHaveBeenCalledOnce();
+    expect(mail.listMail).toHaveBeenCalledOnce();
+
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
+    vi.mocked(mail.getMailCount).mockClear();
+    vi.mocked(mail.listMail).mockClear();
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(mail.getMailCount).not.toHaveBeenCalled();
+    expect(mail.listMail).not.toHaveBeenCalled();
+
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+    fireEvent(document, new Event("visibilitychange"));
+    fireEvent.focus(window);
+    await act(async () => {
+      for (let index = 0; index < 20; index += 1) await Promise.resolve();
+    });
+    expect(mail.getMailCount).toHaveBeenCalledTimes(2);
+    expect(mail.listMail).toHaveBeenCalledTimes(2);
+    intervalSpy.mockRestore();
+  });
+
+  it("coalesces polling and invalidation bursts into one trailing shared Mail refresh", async () => {
+    vi.useFakeTimers();
+    const first = deferred<MailCount>();
+    const second = deferred<MailCount>();
+    const confirmed: MailCount = { schema_version: 1, total: 8, unread: 3, partial: false, partial_errors: [] };
+    const getMailCount = vi
+      .fn<MailAPI["getMailCount"]>()
+      .mockImplementationOnce(() => first.promise)
+      .mockImplementationOnce(() => second.promise)
+      .mockResolvedValue(confirmed);
+    const mail = mailFacet({ getMailCount });
+
+    class MailEventSource implements EventSourceLike {
+      listener: ((event: MessageEvent<string>) => void) | undefined;
+      onopen: ((event: Event) => void) | null = null;
+      onerror: ((event: Event) => void) | null = null;
+      addEventListener(_type: string, listener: (event: MessageEvent<string>) => void) { this.listener = listener; }
+      removeEventListener() { this.listener = undefined; }
+      close() { return undefined; }
+      emit() { this.listener?.(new MessageEvent("invalidate", { data: JSON.stringify({ resources: ["mail"], cursor: "mail-burst" }) })); }
+    }
+    const sources: MailEventSource[] = [];
+    render(<App api={fullAPI(mail)} eventSourceFactory={() => {
+      const source = new MailEventSource();
+      sources.push(source);
+      return source;
+    }} pollInterval={10_000} />);
+    await act(async () => {
+      for (let index = 0; index < 20; index += 1) await Promise.resolve();
+    });
+    expect(getMailCount).toHaveBeenCalledOnce();
+    expect(mail.listMail).not.toHaveBeenCalled();
+
+    act(() => {
+      sources[0].emit();
+      sources[0].emit();
+    });
+    await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+    expect(getMailCount).toHaveBeenCalledOnce();
+    expect(mail.listMail).not.toHaveBeenCalled();
+
+    await act(async () => {
+      first.resolve(confirmed);
+      for (let index = 0; index < 20; index += 1) await Promise.resolve();
+    });
+    expect(getMailCount).toHaveBeenCalledTimes(2);
+    expect(mail.listMail).not.toHaveBeenCalled();
+
+    await act(async () => {
+      second.resolve(confirmed);
+      for (let index = 0; index < 20; index += 1) await Promise.resolve();
+    });
+    expect(getMailCount).toHaveBeenCalledTimes(2);
   });
 
   it("shows simultaneous convoy signals and hides percentage progress when total is zero", async () => {

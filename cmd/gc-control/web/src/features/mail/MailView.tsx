@@ -119,7 +119,7 @@ export function MailView({ model }: MailViewProps) {
         </Text>
         <Stack className="mail-notices" gap="2">
           {model.disconnected ? <Notice tone="danger">Mail connection is unavailable</Notice> : null}
-          {model.stale ? <Notice>Showing last confirmed mail data</Notice> : null}
+          {model.snapshotsStale ? <Notice>Showing last confirmed mail data</Notice> : null}
           {partial ? <Notice tone="info">Mail data is partial</Notice> : null}
           {pageProblems.map((problem, index) => <Text key={`${problem}-${index}`} className="mail-problem" variant="caption">{problem}</Text>)}
         </Stack>

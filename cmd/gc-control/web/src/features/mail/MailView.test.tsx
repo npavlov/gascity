@@ -76,11 +76,15 @@ function model(overrides: Partial<MailModel> = {}): MailModel {
     loading: { count: false, list: false, detail: false, thread: false },
     errors: { count: false, list: false, detail: false, thread: false, notFound: false },
     stale: false,
+    countStale: false,
+    snapshotsStale: false,
     disconnected: false,
     setFilter: vi.fn(),
     select: vi.fn(),
     loadMore: vi.fn(),
     refresh: vi.fn(),
+    refreshCount: vi.fn(async () => true),
+    refreshSnapshots: vi.fn(async () => true),
     onInvalidation: vi.fn(),
     onDisconnect: vi.fn(),
     onReconnect: vi.fn(),
@@ -168,6 +172,7 @@ describe("MailView", () => {
       thread: { identity: { id: first.id, rig: first.rig }, value: thread({ partial: true, truncated: true, partial_errors: ["thread truncated"] }) },
       errors: { count: false, list: false, detail: false, thread: true, notFound: false },
       stale: true,
+      snapshotsStale: true,
       disconnected: true,
     })} />);
 

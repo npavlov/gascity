@@ -6,6 +6,7 @@ import { OrdersWorkspace } from "@/features/orders/OrdersWorkspace";
 import type { OrdersWorkspaceCache, OrdersWorkspaceHandle } from "@/features/orders/OrdersWorkspace";
 import { MailView } from "@/features/mail/MailView";
 import { useMail } from "@/features/mail/useMail";
+import type { MailRefreshResource } from "@/features/mail/useMail";
 import type { ControlCenterAPI, ConvoysAPI, Health, MailAPI, OrdersAPI } from "@/lib/api";
 import { createInvalidationFeed, createRefreshQueue } from "@/lib/events";
 import type { EventSourceFactory, LiveResource } from "@/lib/events";
@@ -62,6 +63,7 @@ export function App({ api, eventSourceFactory, pollInterval = 10_000 }: AppProps
   const [stale, setStale] = useState<Record<"convoys" | "orders", boolean>>({ convoys: false, orders: false });
   const convoyRef = useRef<ConvoysWorkspaceHandle>(null);
   const orderRef = useRef<OrdersWorkspaceHandle>(null);
+  const refreshQueueRef = useRef<ReturnType<typeof createRefreshQueue> | null>(null);
   const [convoyCache, setConvoyCache] = useState<ConvoysWorkspaceCache>({ list: null, detail: null, items: [] });
   const [orderCache, setOrderCache] = useState<OrdersWorkspaceCache>({ list: null, history: null, items: [] });
   const activeTabRef = useRef(activeTab);
@@ -71,10 +73,15 @@ export function App({ api, eventSourceFactory, pollInterval = 10_000 }: AppProps
   const convoys = useMemo(() => convoyFacet(api), [api]);
   const orders = useMemo(() => orderFacet(api), [api]);
   const mail = useMemo(() => supervisorMailFacet(api), [api]);
-  const mailModel = useMail({ api: mail, active: activeTab === "mail", pollInterval });
+  const requestMailRefresh = useCallback((resources: MailRefreshResource[]) => {
+    refreshQueueRef.current?.request(resources.map((resource) => `mail-${resource}`));
+  }, []);
+  const mailModel = useMail({ api: mail, requestRefresh: requestMailRefresh });
   const invalidateMail = mailModel.onInvalidation;
   const disconnectMail = mailModel.onDisconnect;
   const reconnectMail = mailModel.onReconnect;
+  const refreshMailCount = mailModel.refreshCount;
+  const refreshMailSnapshots = mailModel.refreshSnapshots;
   const setConvoysConfirmed = useCallback((confirmed: boolean) => {
     setStale((current) => ({ ...current, convoys: !confirmed }));
   }, []);
@@ -115,6 +122,12 @@ export function App({ api, eventSourceFactory, pollInterval = 10_000 }: AppProps
       if (resource === "orders") {
         return { resource, confirmed: orderRef.current ? await orderRef.current.refresh(signal) : false };
       }
+      if (resource === "mail-count") {
+        return { resource, confirmed: await refreshMailCount(signal) };
+      }
+      if (resource === "mail-snapshots") {
+        return { resource, confirmed: await refreshMailSnapshots(signal) };
+      }
       return { resource, confirmed: true };
     }));
     if (signal.aborted) return;
@@ -125,27 +138,47 @@ export function App({ api, eventSourceFactory, pollInterval = 10_000 }: AppProps
       });
       return next;
     });
-  }, []);
+  }, [refreshMailCount, refreshMailSnapshots]);
 
   useEffect(() => {
     if (state.kind !== "ready" || (!convoys && !orders && !mail)) return;
     const queue = createRefreshQueue(refreshResources);
+    refreshQueueRef.current = queue;
+    if (mail) queue.request(["mail-count"]);
+    const visibleResources = () => {
+      const resources: string[] = [];
+      const active = activeTabRef.current;
+      if (active === "convoys" || active === "orders") resources.push(active);
+      if (mail) {
+        resources.push("mail-count");
+        if (active === "mail") resources.push("mail-snapshots");
+      }
+      return resources;
+    };
     const stopFeed = eventSourceFactory || typeof EventSource !== "undefined"
       ? createInvalidationFeed({
           factory: eventSourceFactory,
           onInvalidate: (resources) => {
-            if (resources.includes("mail")) invalidateMail();
+            const requested = new Set<string>();
+            if (resources.includes("mail")) {
+              invalidateMail();
+              requested.add("mail-count");
+              if (activeTabRef.current === "mail") requested.add("mail-snapshots");
+            }
             const workspaceResources = resources.filter((resource) => resource !== "mail");
             setStale((current) => {
               const next = { ...current };
               workspaceResources.forEach((resource) => { next[resource] = true; });
               return next;
             });
-            queue.request(workspaceResources);
+            workspaceResources.forEach((resource) => requested.add(resource));
+            queue.request([...requested]);
           },
           onReconnect: () => {
             reconnectMail();
-            if (activeTabRef.current !== "mail") queue.request([activeTabRef.current]);
+            const requested = visibleResources();
+            if (mail) requested.push("mail-snapshots");
+            queue.request(requested);
           },
           onStale: () => {
             setStale({ convoys: true, orders: true });
@@ -154,7 +187,7 @@ export function App({ api, eventSourceFactory, pollInterval = 10_000 }: AppProps
         })
       : () => undefined;
     const refreshVisible = () => {
-      if (document.visibilityState === "visible" && activeTabRef.current !== "mail") queue.request([activeTabRef.current]);
+      if (document.visibilityState === "visible") queue.request(visibleResources());
     };
     const interval = window.setInterval(refreshVisible, pollInterval);
     window.addEventListener("focus", refreshVisible);
@@ -168,8 +201,15 @@ export function App({ api, eventSourceFactory, pollInterval = 10_000 }: AppProps
       document.removeEventListener("visibilitychange", onVisibility);
       stopFeed();
       queue.dispose();
+      if (refreshQueueRef.current === queue) refreshQueueRef.current = null;
     };
   }, [convoys, disconnectMail, eventSourceFactory, invalidateMail, mail, orders, pollInterval, reconnectMail, refreshResources, state.kind]);
+
+  useEffect(() => {
+    if (state.kind === "ready" && mail && activeTab === "mail") {
+      refreshQueueRef.current?.request(["mail-snapshots"]);
+    }
+  }, [activeTab, mail, state.kind]);
 
   if (state.kind === "loading") {
     return (
@@ -200,7 +240,7 @@ export function App({ api, eventSourceFactory, pollInterval = 10_000 }: AppProps
         ? { label: "Unread partial", tone: "warning" as const }
         : { label: `${mailModel.count.unread} unread · partial`, tone: "warning" as const };
     }
-    if (mailModel.stale || mailModel.disconnected || mailModel.errors.count) {
+    if (mailModel.countStale || mailModel.disconnected || mailModel.errors.count) {
       return mailModel.count.unread === 0
         ? { label: "Unread stale", tone: "warning" as const }
         : { label: `${mailModel.count.unread} unread · stale`, tone: "warning" as const };
