@@ -1,6 +1,6 @@
 .cc-tabs { min-width: 0; }
-.cc-tabs__list { display: flex; gap: var(--cc-space-1); overflow-x: auto; border-bottom: var(--cc-space-0) solid var(--cc-color-border-subtle); }
-.cc-tabs__trigger { min-height: var(--cc-size-control-compact); padding: var(--cc-space-1) var(--cc-space-3); color: var(--cc-color-text-secondary); font-weight: var(--cc-font-weight-medium); background: transparent; border: none; border-bottom: var(--cc-space-0) solid transparent; }
+.cc-tabs__list { display: flex; gap: var(--cc-space-1); overflow-x: auto; border-bottom: var(--cc-size-border-default) solid var(--cc-color-border-subtle); }
+.cc-tabs__trigger { min-height: var(--cc-size-control-compact); padding: var(--cc-space-1) var(--cc-space-3); color: var(--cc-color-text-secondary); font-weight: var(--cc-font-weight-medium); background: transparent; border: none; border-bottom: var(--cc-size-border-default) solid transparent; }
 .cc-tabs__trigger[data-state="active"] { color: var(--cc-color-action-primary); border-bottom-color: var(--cc-color-action-primary); }
 .cc-tabs__trigger:focus-visible { outline: none; border-color: var(--cc-color-border-focus); box-shadow: var(--cc-shadow-focus); }
 .cc-tabs__content { padding: var(--cc-space-4) var(--cc-space-0); }

@@ -1,4 +1,4 @@
-.cc-detail-header { display: flex; gap: var(--cc-space-4); align-items: center; flex-wrap: wrap; min-width: 0; padding: var(--cc-space-4) var(--cc-space-5); background: var(--cc-color-surface-panel); border-bottom: var(--cc-space-0) solid var(--cc-color-border-subtle); }
+.cc-detail-header { display: flex; gap: var(--cc-space-4); align-items: center; flex-wrap: wrap; min-width: 0; padding: var(--cc-space-4) var(--cc-space-5); background: var(--cc-color-surface-panel); border-bottom: var(--cc-size-border-default) solid var(--cc-color-border-subtle); }
 .cc-detail-header__identity { flex: 1 1 18rem; min-width: 0; }
 .cc-detail-header h1 { margin: var(--cc-space-0); overflow: hidden; font-size: var(--cc-font-size-xl); line-height: var(--cc-font-line-compact); text-overflow: ellipsis; white-space: nowrap; }
 .cc-detail-header__subtitle { margin-top: var(--cc-space-1); overflow: hidden; color: var(--cc-color-text-muted); font-family: var(--cc-font-family-mono); font-size: var(--cc-font-size-sm); text-overflow: ellipsis; white-space: nowrap; }

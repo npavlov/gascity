@@ -10,7 +10,7 @@
   line-height: var(--cc-font-line-compact);
   cursor: pointer;
   background: var(--cc-color-surface-raised);
-  border: var(--cc-space-0) solid var(--cc-color-border-default);
+  border: var(--cc-size-border-default) solid var(--cc-color-border-default);
   border-radius: var(--cc-radius-md);
   transition-duration: var(--cc-motion-duration-fast);
   transition-property: color, background-color, border-color, box-shadow;

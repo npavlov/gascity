@@ -48,6 +48,53 @@ function resolveImport(specifier, fromFile, rootDir) {
   return undefined;
 }
 
+function readProjectCompilerOptions(rootDir) {
+  const configFile = ts.findConfigFile(rootDir, ts.sys.fileExists, "tsconfig.json");
+  if (!configFile) throw new Error(`Control Center tsconfig.json is missing under ${rootDir}`);
+  const config = ts.readConfigFile(configFile, ts.sys.readFile);
+  if (config.error) {
+    throw new Error(ts.flattenDiagnosticMessageText(config.error.messageText, "\n"));
+  }
+  const parsed = ts.parseJsonConfigFileContent(config.config, ts.sys, path.dirname(configFile));
+  if (parsed.errors.length > 0) {
+    throw new Error(
+      parsed.errors.map((diagnostic) => ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n")).join("\n"),
+    );
+  }
+  return {
+    ...parsed.options,
+    composite: false,
+    incremental: false,
+    noEmit: true,
+    tsBuildInfoFile: undefined,
+  };
+}
+
+function checkExampleSemantics(example, index, rootDir, compilerOptions) {
+  const virtualFile = path.resolve(rootDir, `src/ui/__readme-example-${index}.tsx`);
+  const host = ts.createCompilerHost(compilerOptions, true);
+  const originalFileExists = host.fileExists.bind(host);
+  const originalReadFile = host.readFile.bind(host);
+  const originalGetSourceFile = host.getSourceFile.bind(host);
+  const isVirtual = (filename) => path.resolve(filename) === virtualFile;
+
+  host.fileExists = (filename) => isVirtual(filename) || originalFileExists(filename);
+  host.readFile = (filename) => (isVirtual(filename) ? example : originalReadFile(filename));
+  host.getSourceFile = (filename, languageVersion, onError, shouldCreateNewSourceFile) =>
+    isVirtual(filename)
+      ? ts.createSourceFile(filename, example, languageVersion, true, ts.ScriptKind.TSX)
+      : originalGetSourceFile(filename, languageVersion, onError, shouldCreateNewSourceFile);
+
+  const program = ts.createProgram({
+    rootNames: [virtualFile],
+    options: compilerOptions,
+    host,
+  });
+  return ts
+    .getPreEmitDiagnostics(program)
+    .filter((diagnostic) => diagnostic.category === ts.DiagnosticCategory.Error);
+}
+
 export async function checkUIBoundaries({ rootDir = scriptRoot } = {}) {
   const uiDir = path.resolve(rootDir, "src/ui");
   const indexFile = path.join(uiDir, "index.ts");
@@ -63,19 +110,16 @@ export async function checkUIBoundaries({ rootDir = scriptRoot } = {}) {
   );
   const examples = exampleBlocks.join("\n");
   const errors = [];
+  const compilerOptions = readProjectCompilerOptions(rootDir);
 
-  for (const example of exampleBlocks) {
-    const result = ts.transpileModule(example, {
-      compilerOptions: {
-        jsx: ts.JsxEmit.ReactJSX,
-        module: ts.ModuleKind.ESNext,
-        target: ts.ScriptTarget.ES2022,
-      },
-      fileName: "README-example.tsx",
-      reportDiagnostics: true,
-    });
-    if (result.diagnostics?.some((diagnostic) => diagnostic.category === ts.DiagnosticCategory.Error)) {
-      errors.push("README example does not compile");
+  for (const [index, example] of exampleBlocks.entries()) {
+    const diagnostics = checkExampleSemantics(example, index, rootDir, compilerOptions);
+    if (diagnostics.length > 0) {
+      const detail = diagnostics
+        .slice(0, 3)
+        .map((diagnostic) => ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n"))
+        .join("; ");
+      errors.push(`README example does not compile: ${detail}`);
     }
   }
 

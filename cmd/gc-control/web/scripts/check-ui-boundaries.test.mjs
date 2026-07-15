@@ -11,6 +11,22 @@ import { checkUIBoundaries } from "./check-ui-boundaries.mjs";
 
 const webRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
+async function writeTestTSConfig(rootDir) {
+  await writeFile(
+    path.join(rootDir, "tsconfig.json"),
+    JSON.stringify({
+      compilerOptions: {
+        baseUrl: ".",
+        module: "ESNext",
+        moduleResolution: "Bundler",
+        paths: { "@/*": ["src/*"] },
+        strict: true,
+        target: "ES2022",
+      },
+    }),
+  );
+}
+
 describe("feature UI boundaries", () => {
   const eslintCases = [
     ['import { Badge } from "@/ui/components/Badge";', 1],
@@ -73,6 +89,7 @@ describe("feature UI boundaries", () => {
 
   it("rejects a relative feature import that resolves under src/ui", async () => {
     const rootDir = await mkdtemp(path.join(tmpdir(), "cc-ui-boundary-"));
+    await writeTestTSConfig(rootDir);
     await mkdir(path.join(rootDir, "src/ui/components"), { recursive: true });
     await mkdir(path.join(rootDir, "src/features/demo"), { recursive: true });
     await writeFile(path.join(rootDir, "src/ui/index.ts"), "const Button = 1; export { Button };\n");
@@ -88,11 +105,28 @@ describe("feature UI boundaries", () => {
 
   it("rejects README examples that do not compile", async () => {
     const rootDir = await mkdtemp(path.join(tmpdir(), "cc-ui-readme-"));
+    await writeTestTSConfig(rootDir);
     await mkdir(path.join(rootDir, "src/ui"), { recursive: true });
     await writeFile(path.join(rootDir, "src/ui/index.ts"), "const Button = 1; export { Button };\n");
     await writeFile(
       path.join(rootDir, "src/ui/README.md"),
       "<!-- @ui-export Button -->\n```ts\nconst Button = ;\n```\n",
+    );
+
+    await expect(checkUIBoundaries({ rootDir })).rejects.toThrow(/README example does not compile/);
+  });
+
+  it("rejects README TSX examples with missing @/ui exports and type errors", async () => {
+    const rootDir = await mkdtemp(path.join(tmpdir(), "cc-ui-readme-types-"));
+    await mkdir(path.join(rootDir, "src/ui"), { recursive: true });
+    await writeTestTSConfig(rootDir);
+    await writeFile(
+      path.join(rootDir, "src/ui/index.ts"),
+      'function Button(_props: { variant?: "primary" }) {} export { Button };\n',
+    );
+    await writeFile(
+      path.join(rootDir, "src/ui/README.md"),
+      '<!-- @ui-export Button -->\n```tsx\nimport { Button, Missing } from "@/ui";\nconst invalid: Parameters<typeof Button>[0] = { variant: "invalid" };\nvoid Missing;\nvoid invalid;\n```\n',
     );
 
     await expect(checkUIBoundaries({ rootDir })).rejects.toThrow(/README example does not compile/);

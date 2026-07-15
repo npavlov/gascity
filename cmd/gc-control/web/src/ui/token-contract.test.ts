@@ -4,6 +4,12 @@ import { describe, expect, it } from "vitest";
 import themesSource from "./themes.css?raw";
 import tokensSource from "./tokens.css?raw";
 
+const uiCSS = import.meta.glob("./**/*.css", {
+  eager: true,
+  import: "default",
+  query: "?raw",
+}) as Record<string, string>;
+
 const sharedKeys = [
   ...["0", "1", "2", "3", "4", "5", "6", "8", "10", "12"].map(
     (key) => `--cc-space-${key}`,
@@ -14,6 +20,7 @@ const sharedKeys = [
   ...["compact", "default", "relaxed"].map((key) => `--cc-font-line-${key}`),
   ...["compact", "regular"].map((key) => `--cc-size-control-${key}`),
   ...["sm", "md", "lg"].map((key) => `--cc-size-icon-${key}`),
+  "--cc-size-border-default",
   ...["none", "sm", "md", "lg", "full"].map((key) => `--cc-radius-${key}`),
   ...["fast", "normal", "slow"].map((key) => `--cc-motion-duration-${key}`),
   "--cc-motion-ease-standard",
@@ -121,5 +128,24 @@ describe("Control Center token contract", () => {
         "--cc-motion-duration-slow",
       ]),
     );
+  });
+
+  it("uses a nonzero semantic width for visible borders and dividers", () => {
+    const tokens = postcss.parse(tokensSource);
+    const borderToken: string[] = [];
+    tokens.walkDecls("--cc-size-border-default", (decl) => {
+      borderToken.push(decl.value);
+    });
+    expect(borderToken).toEqual(["1px"]);
+
+    const zeroWidthBorders: string[] = [];
+    for (const [filename, source] of Object.entries(uiCSS)) {
+      postcss.parse(source).walkDecls(/^border(?:-(?:top|right|bottom|left))?$/, (decl) => {
+        if (decl.value.includes("solid") && decl.value.includes("var(--cc-space-0)")) {
+          zeroWidthBorders.push(`${filename}:${decl.prop}`);
+        }
+      });
+    }
+    expect(zeroWidthBorders).toEqual([]);
   });
 });

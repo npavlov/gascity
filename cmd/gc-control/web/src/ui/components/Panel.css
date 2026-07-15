@@ -1,5 +1,5 @@
-.cc-panel { min-width: 0; overflow: hidden; background: var(--cc-color-surface-panel); border: var(--cc-space-0) solid var(--cc-color-border-default); border-radius: var(--cc-radius-lg); box-shadow: var(--cc-shadow-panel); }
-.cc-panel__header { display: flex; gap: var(--cc-space-3); align-items: center; justify-content: space-between; padding: var(--cc-space-3) var(--cc-space-4); border-bottom: var(--cc-space-0) solid var(--cc-color-border-subtle); }
+.cc-panel { min-width: 0; overflow: hidden; background: var(--cc-color-surface-panel); border: var(--cc-size-border-default) solid var(--cc-color-border-default); border-radius: var(--cc-radius-lg); box-shadow: var(--cc-shadow-panel); }
+.cc-panel__header { display: flex; gap: var(--cc-space-3); align-items: center; justify-content: space-between; padding: var(--cc-space-3) var(--cc-space-4); border-bottom: var(--cc-size-border-default) solid var(--cc-color-border-subtle); }
 .cc-panel__header h2 { margin: var(--cc-space-0); font-size: var(--cc-font-size-md); font-weight: var(--cc-font-weight-semibold); }
 .cc-panel__actions { display: flex; gap: var(--cc-space-2); flex-wrap: wrap; }
 .cc-panel__body { padding: var(--cc-space-4); }

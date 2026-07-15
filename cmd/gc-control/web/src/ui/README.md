@@ -109,6 +109,9 @@ const props: Array<
   StatusSignalProps | TabsProps | TextareaProps | TextProps | ToolFrameProps |
   TooltipProps
 > = [];
+void icon;
+void variants;
+void props;
 
 export function Example() {
   return <ToolFrame header={<DetailHeader title="Convoy" />} sidebar={
@@ -119,7 +122,6 @@ export function Example() {
       <Badge>3/4</Badge><Progress label="Progress" value={75} /><Tabs items={tabs} />
       <Tooltip content="Refresh"><Button>Refresh</Button></Tooltip><Dialog title="Details" trigger={<Button>Open</Button>}>Body</Dialog>
       <EmptyState title="No orders" /><Skeleton /><Spinner label="Loading" /></Grid></Panel>
-    <span hidden>{String(Boolean(icon && variants && props))}</span>
     {[AlertIcon, CheckIcon, ChevronDownIcon, ChevronLeftIcon, ChevronRightIcon,
       CloseIcon, ContainerIcon, DiffIcon, ExternalLinkIcon, InfoIcon, LandmarkIcon,
       ListChecksIcon, MailIcon, MessageIcon, MoreIcon, PauseIcon, PlayIcon,
