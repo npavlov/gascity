@@ -330,6 +330,15 @@
           "has_output": {
             "type": "boolean"
           },
+          "outcome": {
+            "description": "Last-run outcome from the matching order check",
+            "enum": [
+              "success",
+              "failed",
+              "canceled"
+            ],
+            "type": "string"
+          },
           "problems": {
             "items": {
               "$ref": "#/components/schemas/Problem"

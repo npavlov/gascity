@@ -5,9 +5,11 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/gastownhall/gascity/internal/api/genclient"
 	"github.com/gastownhall/gascity/internal/controlcenter/gcstate"
 )
 
@@ -53,6 +55,43 @@ func TestOrderRoutesProjectDefinitionsHistoryAndOnDemandOutput(t *testing.T) {
 	decodeAPI(t, output, &gotOutput)
 	if reader.outputCalls != 1 || gotOutput.Output != "hello" || gotOutput.StoreRef != "city" {
 		t.Fatalf("output calls=%d body=%#v", reader.outputCalls, gotOutput)
+	}
+}
+
+func TestOrderRoutesExposeCheckOutcomeWithoutOverwritingFeedStatus(t *testing.T) {
+	reader := populatedReader()
+	mux, _ := registeredTestAPI(t, reader, nil)
+
+	recorder := requestAPI(t, mux, "/api/v1/orders")
+	var got gcstate.ResourceList[gcstate.OrderView]
+	decodeAPI(t, recorder, &got)
+
+	if recorder.Code != http.StatusOK || len(got.Items) != 1 || got.Items[0].LastRun == nil {
+		t.Fatalf("response = status %d body %#v", recorder.Code, got)
+	}
+	if got.Items[0].LastRun.Status != "active" || got.Items[0].LastRun.Outcome != "success" {
+		t.Fatalf("last run = %#v, want independent active status and success outcome", got.Items[0].LastRun)
+	}
+}
+
+func TestOrderRunOpenAPISchemaSeparatesStatusAndOutcomeEnums(t *testing.T) {
+	_, api := registeredTestAPI(t, populatedReader(), nil)
+	schema := api.OpenAPI().Components.Schemas.Map()["OrderRunView"]
+	if schema == nil {
+		t.Fatal("OpenAPI missing OrderRunView")
+	}
+	status := schema.Properties["status"]
+	outcome := schema.Properties["outcome"]
+	if status == nil || !reflect.DeepEqual(status.Enum, []any{"active", "completed", "failed", "unknown"}) {
+		t.Fatalf("status schema = %#v", status)
+	}
+	if outcome == nil || !reflect.DeepEqual(outcome.Enum, []any{"success", "failed", "canceled"}) {
+		t.Fatalf("outcome schema = %#v", outcome)
+	}
+	for _, required := range schema.Required {
+		if required == "outcome" {
+			t.Fatal("outcome must remain optional")
+		}
 	}
 }
 
@@ -117,6 +156,39 @@ func TestOrderRoutesMapUpstreamFailures(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestOrderOutputIdentityMismatchMapsToBadGateway(t *testing.T) {
+	supervisor := &outputIdentitySupervisor{}
+	client, err := gcstate.NewClient("taxdome", supervisor, nil)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	mux, _ := registeredTestAPI(t, client, nil)
+
+	recorder := requestAPI(t, mux, "/api/v1/orders/history/run-1?store_ref=city")
+
+	if recorder.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d body = %s, want 502", recorder.Code, recorder.Body.String())
+	}
+}
+
+type outputIdentitySupervisor struct {
+	gcstate.SupervisorResponses
+}
+
+//nolint:revive // Method spelling is fixed by the generated client interface.
+func (*outputIdentitySupervisor) GetV0CityByCityNameOrderHistoryByBeadIdWithResponse(
+	context.Context,
+	string,
+	string,
+	*genclient.GetV0CityByCityNameOrderHistoryByBeadIdParams,
+	...genclient.RequestEditorFn,
+) (*genclient.GetV0CityByCityNameOrderHistoryByBeadIdResponse, error) {
+	return &genclient.GetV0CityByCityNameOrderHistoryByBeadIdResponse{
+		HTTPResponse: &http.Response{StatusCode: http.StatusOK},
+		JSON200:      &genclient.OrderHistoryDetailResponse{BeadId: "different-run", StoreRef: "city"},
+	}, nil
 }
 
 func TestOrderPartialFeedReturnsUsableDegradedResponse(t *testing.T) {

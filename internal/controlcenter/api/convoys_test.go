@@ -73,6 +73,53 @@ func TestConvoyListRequiresLastConfirmedDataOnEssentialFailure(t *testing.T) {
 	}
 }
 
+func TestConvoyListUsesRecentDataWhenActiveUnavailable(t *testing.T) {
+	reader := populatedReader()
+	reader.convoys = gcstate.Page[gcstate.BeadSource]{
+		Partial:  true,
+		Problems: []gcstate.Problem{{Code: "upstream_unavailable", Source: "convoys", Detail: "active store unavailable", Retryable: true}},
+	}
+	recent := *reader.convoy.Convoy
+	recent.Status = "closed"
+	reader.recent = gcstate.Page[gcstate.BeadSource]{Items: []gcstate.BeadSource{recent}}
+	reader.convoy.Convoy = &recent
+	mux, _ := registeredTestAPI(t, reader, nil)
+
+	recorder := requestAPI(t, mux, "/api/v1/convoys")
+	var got gcstate.ResourceList[gcstate.ConvoySummary]
+	decodeAPI(t, recorder, &got)
+
+	if recorder.Code != http.StatusOK || len(got.Items) != 1 || got.Items[0].ID != "convoy-1" || !got.Degraded || got.Stale {
+		t.Fatalf("response = status %d body %#v, want usable degraded recent data", recorder.Code, got)
+	}
+}
+
+func TestConvoyListRequiresCacheForItemlessPartialPages(t *testing.T) {
+	failure := gcstate.Page[gcstate.BeadSource]{
+		Partial:  true,
+		Problems: []gcstate.Problem{{Code: "upstream_partial", Source: "convoys", Detail: "store returned no usable items", Retryable: true}},
+	}
+	reader := populatedReader()
+	reader.convoys, reader.recent = failure, failure
+	mux, _ := registeredTestAPI(t, reader, nil)
+	if got := requestAPI(t, mux, "/api/v1/convoys").Code; got != http.StatusServiceUnavailable {
+		t.Fatalf("first-load status = %d, want 503", got)
+	}
+
+	cachedReader := populatedReader()
+	cachedMux, _ := registeredTestAPI(t, cachedReader, nil)
+	if got := requestAPI(t, cachedMux, "/api/v1/convoys").Code; got != http.StatusOK {
+		t.Fatalf("prime cache status = %d", got)
+	}
+	cachedReader.convoys, cachedReader.recent = failure, failure
+	recorder := requestAPI(t, cachedMux, "/api/v1/convoys")
+	var stale gcstate.ResourceList[gcstate.ConvoySummary]
+	decodeAPI(t, recorder, &stale)
+	if recorder.Code != http.StatusOK || len(stale.Items) != 1 || !stale.Degraded || !stale.Stale {
+		t.Fatalf("cached response = status %d body %#v", recorder.Code, stale)
+	}
+}
+
 func TestConvoyRoutesValidateIDsAndMapUpstreamErrors(t *testing.T) {
 	reader := populatedReader()
 	mux, _ := registeredTestAPI(t, reader, nil)

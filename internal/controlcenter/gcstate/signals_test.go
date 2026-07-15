@@ -59,6 +59,18 @@ func TestComposeSignalsUsesStoppedMatchedSessionEvidence(t *testing.T) {
 	}
 }
 
+func TestComposeSignalsUsesMatchedStoppedSessionForAnyLiveStatus(t *testing.T) {
+	bead := BeadView{ID: "step", Status: "open", Assignee: "worker"}
+	sessions := []SessionSummary{{ID: "worker", ActiveBead: "step", Running: false}}
+
+	if got := signalKeys(ComposeSignals([]BeadView{bead}, sessions)); !reflect.DeepEqual(got, []string{"stopped"}) {
+		t.Fatalf("matched open-bead signals = %v, want stopped", got)
+	}
+	if got := signalKeys(ComposeSignals([]BeadView{bead}, nil)); len(got) != 0 {
+		t.Fatalf("unmatched open-bead signals = %v, want no fallback stopped signal", got)
+	}
+}
+
 func TestComposeSignalsSessionMatchingPrecedenceAndFallbacks(t *testing.T) {
 	bead := BeadView{ID: "step", Status: "in_progress", Assignee: "assignee-session"}
 	sessions := []SessionSummary{

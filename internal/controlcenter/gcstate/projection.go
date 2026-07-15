@@ -37,12 +37,6 @@ func (s *Service) ListConvoys(ctx context.Context) (ResourceList[ConvoySummary],
 	result.Problems = append(result.Problems, active.Problems...)
 	result.Problems = append(result.Problems, recent.Problems...)
 	result.Degraded = active.Partial || recent.Partial || len(result.Problems) > 0
-	if problem, failed := essentialPageFailure(active); failed {
-		if cached, ok := s.staleConvoys(result.Problems); ok {
-			return cached, nil
-		}
-		return ResourceList[ConvoySummary]{}, &UpstreamError{Code: problem.Code, Operation: "list convoys", Detail: problem.Detail}
-	}
 
 	sources := append([]BeadSource(nil), active.Items...)
 	seen := make(map[string]bool, len(sources))
@@ -61,11 +55,24 @@ func (s *Service) ListConvoys(ctx context.Context) (ResourceList[ConvoySummary],
 		}
 	}
 
-	if len(sources) == 0 && len(result.Problems) > 0 {
+	if len(sources) == 0 && result.Degraded {
 		if cached, ok := s.staleConvoys(result.Problems); ok {
 			return cached, nil
 		}
-		return result, nil
+		problem, failed := essentialPageFailure(active)
+		if !failed {
+			problem, failed = essentialPageFailure(recent)
+		}
+		if failed {
+			return ResourceList[ConvoySummary]{}, &UpstreamError{Code: problem.Code, Operation: "list convoys", Detail: problem.Detail}
+		}
+		detail := "Supervisor returned partial convoy data without usable items"
+		if len(result.Problems) > 0 && result.Problems[0].Detail != "" {
+			detail = result.Problems[0].Detail
+		}
+		return ResourceList[ConvoySummary]{}, &UpstreamError{
+			Code: "upstream_unavailable", Operation: "list convoys", Detail: detail,
+		}
 	}
 	sessions := s.reader.ListSessions(ctx)
 	pending := s.reader.ListPending(ctx)
@@ -428,14 +435,26 @@ func ProjectOrders(definitions []OrderSource, checks []OrderCheckSource, feed Pa
 		if definition.Name == "" || definition.ScopedName == "" || definition.Type == "" {
 			view.Problems = append(view.Problems, missingProblem("missing_order_identity", "orders", "order name, scoped_name, and type are required", definition.ScopedName))
 		}
+		check, hasCheck := checkByName[definition.ScopedName]
 		runs := histories[definition.ScopedName]
 		if len(runs) == 0 {
-			if check, ok := checkByName[definition.ScopedName]; ok && check.LastRun != "" {
+			if hasCheck && check.LastRun != "" {
 				runs = []OrderRunSource{{CreatedAt: check.LastRun}}
 			}
 		}
 		if len(runs) > 0 {
 			run := projectOrderRun(runs[0])
+			if hasCheck && check.LastRun != "" && check.LastRun == run.CreatedAt && check.LastRunOutcome != "" {
+				if validOrderOutcome(check.LastRunOutcome) {
+					run.Outcome = check.LastRunOutcome
+				} else {
+					run.Problems = append(run.Problems, Problem{
+						Code: "invalid_order_outcome", Source: "orders_check",
+						Detail:     fmt.Sprintf("order check returned unsupported last_run_outcome %q", check.LastRunOutcome),
+						ResourceID: definition.ScopedName, Retryable: true,
+					})
+				}
+			}
 			if run.StoreRef == "" || run.BeadID == "" {
 				run.Problems = append(run.Problems, missingProblem("missing_order_run_identity", "orders_history", "order history rows require store_ref and bead_id", run.BeadID))
 			}
@@ -533,6 +552,10 @@ func terminalStatus(status string) bool { return status == "closed" || status ==
 
 func validOrderStatus(status string) bool {
 	return status == "active" || status == "completed" || status == "failed"
+}
+
+func validOrderOutcome(outcome string) bool {
+	return outcome == "success" || outcome == "failed" || outcome == "canceled"
 }
 
 func orderRunKey(storeRef, beadID string) string { return storeRef + "\x00" + beadID }

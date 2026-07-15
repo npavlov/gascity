@@ -397,13 +397,27 @@ func (c *Client) ListOrderHistories(ctx context.Context, scopedNames []string, l
 
 // GetOrderRunOutput loads output on demand and forwards both identity fields.
 func (c *Client) GetOrderRunOutput(ctx context.Context, beadID, storeRef string) (OrderRunOutput, error) {
+	const operation = "get order run output"
 	params := &genclient.GetV0CityByCityNameOrderHistoryByBeadIdParams{StoreRef: &storeRef}
 	callCtx, cancel := boundedReadContext(ctx)
 	response, err := c.api.GetV0CityByCityNameOrderHistoryByBeadIdWithResponse(callCtx, c.city, beadID, params)
 	cancel()
-	body, err := checkedBody("get order run output", response != nil, statusOfOutput(response), problemOfOutput(response), bodyOfOutput(response), err)
+	body, err := checkedBody(operation, response != nil, statusOfOutput(response), problemOfOutput(response), bodyOfOutput(response), err)
 	if err != nil {
 		return OrderRunOutput{}, err
+	}
+	status := statusOfOutput(response)
+	if body.BeadId == "" || body.StoreRef == "" {
+		return OrderRunOutput{}, &UpstreamError{
+			Code: "upstream_protocol", Operation: operation, StatusCode: status,
+			Detail: "successful Supervisor response omitted bead_id or store_ref",
+		}
+	}
+	if body.BeadId != beadID || body.StoreRef != storeRef {
+		return OrderRunOutput{}, &UpstreamError{
+			Code: "upstream_protocol", Operation: operation, StatusCode: status,
+			Detail: fmt.Sprintf("Supervisor output identity %q/%q does not match requested %q/%q", body.StoreRef, body.BeadId, storeRef, beadID),
+		}
 	}
 	return OrderRunOutput{
 		BeadID: body.BeadId, StoreRef: body.StoreRef, CreatedAt: body.CreatedAt,

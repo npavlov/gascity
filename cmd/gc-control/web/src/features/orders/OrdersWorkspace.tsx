@@ -249,7 +249,8 @@ export const OrdersWorkspace = forwardRef<OrdersWorkspaceHandle, OrdersWorkspace
             {selected.last_run ? (
               <Stack gap="1" aria-label="Last known order run">
                 <Text variant="label">Last known run</Text>
-                <Text>{selected.last_run.status}</Text>
+                <Text>Status: {selected.last_run.status}</Text>
+                {selected.last_run.outcome ? <Text>Outcome: {selected.last_run.outcome}</Text> : null}
                 <Text variant="caption">{selected.last_run.created_at || "Time unavailable"}</Text>
                 {selected.last_run.store_ref ? <Text variant="caption">Store: {selected.last_run.store_ref}</Text> : null}
                 <Problems problems={selected.last_run.problems} />

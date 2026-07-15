@@ -267,6 +267,31 @@ describe("App", () => {
     expect(getOrderRunOutput).toHaveBeenCalledWith("run-1", "city", expect.any(AbortSignal));
   });
 
+  it("renders feed status and matching check outcome as separate facts", async () => {
+    const user = userEvent.setup();
+    const run = {
+      bead_id: "run-1",
+      store_ref: "city",
+      status: "active" as const,
+      outcome: "failed" as const,
+      created_at: "2026-07-15T10:00:00Z",
+      has_output: false,
+      problems: [],
+    };
+    const api = fullAPI({
+      listOrders: vi.fn(async (): Promise<OrderList> => orderList([
+        { name: "review", scoped_name: "city/review", type: "cooldown", enabled: true, last_run: run, problems: [] },
+      ])),
+    });
+    render(<App api={api} />);
+
+    await user.click(await screen.findByRole("tab", { name: "Orders" }));
+
+    expect(screen.getByText("Last run: active")).toBeVisible();
+    expect(screen.getByText("Status: active")).toBeVisible();
+    expect(screen.getByText("Outcome: failed")).toBeVisible();
+  });
+
   it("aborts and hides output from the previously selected exact order run", async () => {
     const user = userEvent.setup();
     const first = order("city/a", "Order A");

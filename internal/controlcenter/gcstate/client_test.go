@@ -190,7 +190,9 @@ func TestClientUsesExactGeneratedParameters(t *testing.T) {
 	fake.output = func(_ context.Context, _ string, _ string, params *genclient.GetV0CityByCityNameOrderHistoryByBeadIdParams) (*genclient.GetV0CityByCityNameOrderHistoryByBeadIdResponse, error) {
 		paramsCopy := *params
 		outputParams = &paramsCopy
-		return outputResponse(validOutputBody()), nil
+		body := validOutputBody()
+		body.StoreRef = "rig:taxdome"
+		return outputResponse(body), nil
 	}
 	client := mustClient(t, fake)
 
@@ -222,6 +224,35 @@ func TestClientUsesExactGeneratedParameters(t *testing.T) {
 	}
 	if outputParams == nil || stringValue(outputParams.StoreRef) != "rig:taxdome" {
 		t.Fatalf("output params = %#v", outputParams)
+	}
+}
+
+func TestClientRejectsMissingOrMismatchedOrderOutputIdentity(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*genclient.OrderHistoryDetailResponse)
+	}{
+		{name: "missing bead id", mutate: func(body *genclient.OrderHistoryDetailResponse) { body.BeadId = "" }},
+		{name: "missing store ref", mutate: func(body *genclient.OrderHistoryDetailResponse) { body.StoreRef = "" }},
+		{name: "mismatched bead id", mutate: func(body *genclient.OrderHistoryDetailResponse) { body.BeadId = "other-run" }},
+		{name: "mismatched store ref", mutate: func(body *genclient.OrderHistoryDetailResponse) { body.StoreRef = "other-store" }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fake := &fakeSupervisor{}
+			fake.output = func(context.Context, string, string, *genclient.GetV0CityByCityNameOrderHistoryByBeadIdParams) (*genclient.GetV0CityByCityNameOrderHistoryByBeadIdResponse, error) {
+				body := validOutputBody()
+				test.mutate(body)
+				return outputResponse(body), nil
+			}
+
+			_, err := mustClient(t, fake).GetOrderRunOutput(context.Background(), "run-1", "rig")
+
+			var upstream *UpstreamError
+			if !errors.As(err, &upstream) || upstream.Code != "upstream_protocol" || upstream.StatusCode != http.StatusOK {
+				t.Fatalf("error = %#v, want HTTP 200 upstream_protocol", err)
+			}
+		})
 	}
 }
 

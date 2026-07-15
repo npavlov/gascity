@@ -42,7 +42,7 @@ func composeSignals(beads []BeadView, sessions []SessionSummary, sessionsComplet
 			}
 			if matched.Running {
 				running = true
-			} else if bead.Status == "in_progress" {
+			} else {
 				stopped = true
 			}
 		} else if sessionsComplete && bead.Status == "in_progress" && bead.Assignee != "" {
@@ -61,7 +61,7 @@ func composeSignals(beads []BeadView, sessions []SessionSummary, sessionsComplet
 		signals = append(signals, StatusSignal{Key: "running", Icon: "play", Label: "Running", Tone: "success", Detail: "A matched worker session is running"})
 	}
 	if stopped {
-		signals = append(signals, StatusSignal{Key: "stopped", Icon: "stop", Label: "Worker stopped", Tone: "danger", Detail: "An assigned in-progress member has no running session"})
+		signals = append(signals, StatusSignal{Key: "stopped", Icon: "stop", Label: "Worker stopped", Tone: "danger", Detail: "A live member has a matched stopped session, or an assigned in-progress member has no live session"})
 	}
 	if waiting {
 		signals = append(signals, StatusSignal{Key: "waiting", Icon: "pause", Label: "Waiting", Tone: "info", Detail: "An open member is blocked by dependencies"})

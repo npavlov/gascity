@@ -122,6 +122,7 @@ type OrderRunView struct {
 	BeadID     string    `json:"bead_id"`
 	StoreRef   string    `json:"store_ref"`
 	Status     string    `json:"status" enum:"active,completed,failed,unknown"`
+	Outcome    string    `json:"outcome,omitempty" enum:"success,failed,canceled" doc:"Last-run outcome from the matching order check"`
 	CreatedAt  string    `json:"created_at"`
 	DurationMS string    `json:"duration_ms,omitempty"`
 	ExitCode   string    `json:"exit_code,omitempty"`

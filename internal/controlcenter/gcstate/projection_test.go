@@ -164,6 +164,84 @@ func TestProjectOrdersUsesExactFeedIdentityAndKeepsUnknownHonest(t *testing.T) {
 	}
 }
 
+func TestProjectOrdersKeepsMatchingCheckOutcomeSeparateFromFeedStatus(t *testing.T) {
+	definitions := []OrderSource{{Name: "review", ScopedName: "city/review", Type: "cooldown", Enabled: true}}
+	checks := []OrderCheckSource{{
+		Name: "review", ScopedName: "city/review", LastRun: "2026-07-15T10:00:00Z", LastRunOutcome: "failed",
+	}}
+	histories := map[string][]OrderRunSource{
+		"city/review": {{BeadID: "run-1", StoreRef: "city", CreatedAt: "2026-07-15T10:00:00Z"}},
+	}
+	feed := Page[OrderFeedSource]{Items: []OrderFeedSource{{BeadID: "run-1", StoreRef: "city", Status: "active"}}}
+
+	got := ProjectOrders(definitions, checks, feed, histories)
+
+	if len(got.Items) != 1 || got.Items[0].LastRun == nil {
+		t.Fatalf("orders = %#v", got.Items)
+	}
+	if got.Items[0].LastRun.Status != "active" || got.Items[0].LastRun.Outcome != "failed" {
+		t.Fatalf("last run = %#v, want independent active status and failed outcome", got.Items[0].LastRun)
+	}
+}
+
+func TestProjectOrdersOnlyAttachesCheckOutcomeToMatchingRun(t *testing.T) {
+	definitions := []OrderSource{{Name: "review", ScopedName: "city/review", Type: "cooldown"}}
+	checks := []OrderCheckSource{{
+		Name: "review", ScopedName: "city/review", LastRun: "2026-07-15T11:00:00Z", LastRunOutcome: "success",
+	}}
+	histories := map[string][]OrderRunSource{
+		"city/review": {{BeadID: "older-run", StoreRef: "city", CreatedAt: "2026-07-15T10:00:00Z"}},
+	}
+
+	got := ProjectOrders(definitions, checks, Page[OrderFeedSource]{}, histories)
+
+	if got.Items[0].LastRun == nil || got.Items[0].LastRun.Outcome != "" {
+		t.Fatalf("last run = %#v, want no outcome from a different check timestamp", got.Items[0].LastRun)
+	}
+}
+
+func TestProjectOrdersAttachesOutcomeToCheckSynthesizedRun(t *testing.T) {
+	definitions := []OrderSource{{Name: "review", ScopedName: "city/review", Type: "cooldown"}}
+	checks := []OrderCheckSource{{
+		Name: "review", ScopedName: "city/review", LastRun: "2026-07-15T10:00:00Z", LastRunOutcome: "canceled",
+	}}
+
+	got := ProjectOrders(definitions, checks, Page[OrderFeedSource]{}, nil)
+
+	if got.Items[0].LastRun == nil || got.Items[0].LastRun.CreatedAt != checks[0].LastRun || got.Items[0].LastRun.Outcome != "canceled" {
+		t.Fatalf("last run = %#v, want synthesized canceled check outcome", got.Items[0].LastRun)
+	}
+	if got.Items[0].LastRun.Status != "unknown" {
+		t.Fatalf("status = %q, check outcome must not invent feed status", got.Items[0].LastRun.Status)
+	}
+}
+
+func TestProjectOrdersRejectsUnsupportedMatchingCheckOutcome(t *testing.T) {
+	definitions := []OrderSource{{Name: "review", ScopedName: "city/review", Type: "cooldown"}}
+	checks := []OrderCheckSource{{
+		Name: "review", ScopedName: "city/review", LastRun: "2026-07-15T10:00:00Z", LastRunOutcome: "timed_out",
+	}}
+	histories := map[string][]OrderRunSource{
+		"city/review": {{BeadID: "run-1", StoreRef: "city", CreatedAt: "2026-07-15T10:00:00Z"}},
+	}
+
+	got := ProjectOrders(definitions, checks, Page[OrderFeedSource]{}, histories)
+
+	run := got.Items[0].LastRun
+	if run == nil || run.Outcome != "" {
+		t.Fatalf("last run = %#v, unsupported outcome must be omitted", run)
+	}
+	found := false
+	for _, problem := range run.Problems {
+		if problem.Code == "invalid_order_outcome" && problem.Source == "orders_check" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("problems = %#v, want orders_check invalid_order_outcome", run.Problems)
+	}
+}
+
 func TestProjectOrdersReportsMissingRequiredIdentity(t *testing.T) {
 	got := ProjectOrders([]OrderSource{{Enabled: true}}, nil, Page[OrderFeedSource]{}, nil)
 	if len(got.Items) != 1 || !containsAll(problemCodes(got.Items[0].Problems), []string{"missing_order_identity"}) {

@@ -255,6 +255,11 @@ export interface components {
             duration_ms?: string;
             exit_code?: string;
             has_output: boolean;
+            /**
+             * @description Last-run outcome from the matching order check
+             * @enum {string}
+             */
+            outcome?: "success" | "failed" | "canceled";
             problems: components["schemas"]["Problem"][] | null;
             /** @enum {string} */
             status: "active" | "completed" | "failed" | "unknown";

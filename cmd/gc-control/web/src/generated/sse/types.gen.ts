@@ -119,6 +119,10 @@ export type OrderRunView = {
     duration_ms?: string;
     exit_code?: string;
     has_output: boolean;
+    /**
+     * Last-run outcome from the matching order check
+     */
+    outcome?: 'success' | 'failed' | 'canceled';
     problems: Array<Problem> | null;
     status: 'active' | 'completed' | 'failed' | 'unknown';
     store_ref: string;
