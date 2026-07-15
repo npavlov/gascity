@@ -5,7 +5,6 @@ import {
   AlertIcon,
   Badge,
   Button,
-  CheckIcon,
   EmptyState,
   MessageIcon,
   Panel,
@@ -27,7 +26,7 @@ export interface MayorWorkspaceProps {
 
 const statePresentation: Record<MayorState, { label: string; tone: StatusTone; icon: UIIcon }> = {
   available_dormant: { label: "Ready on first message", tone: "info", icon: MessageIcon },
-  idle: { label: "Idle", tone: "success", icon: CheckIcon },
+  idle: { label: "Idle", tone: "success", icon: MessageIcon },
   in_turn: { label: "In turn", tone: "info", icon: MessageIcon },
   sleeping: { label: "Sleeping", tone: "warning", icon: MessageIcon },
   stopped: { label: "Stopped", tone: "warning", icon: AlertIcon },

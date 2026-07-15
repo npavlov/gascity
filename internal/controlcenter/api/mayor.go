@@ -62,18 +62,16 @@ func registerMayor(api huma.API, opts Options) {
 		if opts.Mayor == nil {
 			return nil, huma.Error503ServiceUnavailable("Control Center Mayor service is unavailable")
 		}
-		view, err := opts.Mayor.Get(ctx)
+		snapshot, err := opts.Mayor.Snapshot(ctx, mayor.SnapshotOptions{AllowStale: true, IncludePending: true})
 		if err != nil {
 			return nil, mapMayorError(err)
 		}
-		if view.Materialized {
-			pending, pendingErr := opts.Mayor.Pending(ctx)
-			if pendingErr != nil {
-				view.Degraded = true
-				view.Problems = append(view.Problems, mayor.MayorProblem{Code: "pending_unavailable", Source: "pending", Detail: pendingErr.Error(), Retryable: true})
-			} else {
-				view.Pending = pending
-			}
+		view := snapshot.View
+		if snapshot.PendingError != nil {
+			view.Degraded = true
+			view.Problems = append(view.Problems, mayor.MayorProblem{Code: "pending_unavailable", Source: "pending", Detail: snapshot.PendingError.Error(), Retryable: true})
+		} else {
+			view.Pending = snapshot.Pending
 		}
 		return &mayorViewOutput{Body: view}, nil
 	})

@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { MayorWorkspace } from "./MayorWorkspace";
+import mayorWorkspaceStyles from "./MayorWorkspace.css?raw";
 import type { MayorController } from "./useMayor";
 import type { MayorState, MayorView } from "@/lib/api";
 
@@ -19,6 +20,7 @@ function controller(state: MayorState = "idle", overrides: Partial<MayorControll
     failureState: null, liveTurn: null, composerDraft: "", setComposerDraft: vi.fn(), pendingDraft: "",
     setPendingDraft: vi.fn(), receipt: null, mutation: null, mutationError: null, scrollOffset: 0,
     setScrollOffset: vi.fn(), refresh: vi.fn(async () => undefined), loadOlder: vi.fn(async () => undefined),
+    refreshStatus: vi.fn(async () => true), refreshSnapshots: vi.fn(async () => true),
     send: vi.fn(async () => undefined), respond: vi.fn(async () => undefined), canSend: true,
     hasOlder: false, loadingOlder: false, ...overrides,
   };
@@ -31,6 +33,15 @@ describe("MayorWorkspace", () => {
   ] as const)("renders %s distinctly", (state, label) => {
     render(<MayorWorkspace controller={controller(state)} />);
     expect(screen.getByText(label)).toBeVisible();
+  });
+
+  it("uses the Mayor icon allowlist and semantic transcript sizing", () => {
+    const { container } = render(<MayorWorkspace controller={controller("idle")} />);
+    expect(container.querySelector("svg.lucide-check")).toBeNull();
+    expect(container.querySelector("svg.lucide-message-circle")).not.toBeNull();
+    expect(mayorWorkspaceStyles).not.toContain("max-height: 60vh");
+    expect(mayorWorkspaceStyles).toContain("--cc-size-mayor-transcript-max-block:");
+    expect(mayorWorkspaceStyles).toContain("max-block-size: var(--cc-size-mayor-transcript-max-block)");
   });
 
   it.each([

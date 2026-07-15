@@ -96,6 +96,12 @@ func TestResolveMayorIdentity(t *testing.T) {
 			wantState: StateIdle, wantSessions: 1,
 		},
 		{
+			name:      "unknown nonrunning session state stays unsupported",
+			status:    StatusSource{NamedSessions: []NamedSessionSource{{Identity: identity, Mode: "on-demand", Status: "materialized"}}},
+			session:   SessionSource{ID: "session-1", State: "mystery", ConfiguredNamedSession: configured(true)},
+			wantState: StateUnsupported, wantSessions: 1,
+		},
+		{
 			name:      "similar identity is not a match",
 			status:    StatusSource{NamedSessions: []NamedSessionSource{{Identity: identity + "-other", Status: "materialized"}}},
 			wantState: StateMissing, wantErrCode: "mayor_not_configured",
@@ -227,6 +233,21 @@ func TestTranscriptAndPendingRejectDisconnectedCachedMaterialization(t *testing.
 	assert.Zero(t, reader.pendingCalls)
 }
 
+func TestPendingUnsupportedIsAValidNoPromptCapability(t *testing.T) {
+	reader := &fakeReader{
+		status:  StatusSource{NamedSessions: []NamedSessionSource{{Identity: "named", Status: "materialized"}}},
+		session: SessionSource{ID: "session-1", State: "active", Activity: "idle", Running: true, ConfiguredNamedSession: configured(true)},
+		pending: PendingSource{Supported: false},
+	}
+	service, err := NewService("named", reader, &fakeCommander{})
+	require.NoError(t, err)
+
+	pending, err := service.Pending(context.Background())
+	require.NoError(t, err)
+	assert.Nil(t, pending)
+	assert.Equal(t, 1, reader.pendingCalls)
+}
+
 func TestResolveDisconnectedUsesLastGoodAsStale(t *testing.T) {
 	reader := &fakeReader{status: StatusSource{NamedSessions: []NamedSessionSource{{Identity: "named", Status: "reserved-unmaterialized"}}}}
 	service, err := NewService("named", reader, &fakeCommander{})
@@ -283,7 +304,11 @@ func TestSubmitIntentStateMachine(t *testing.T) {
 		{name: "running unknown nonempty activity", status: "materialized", state: "active", activity: "mystery", running: true, wantErr: "mayor_activity_unknown"},
 		{name: "idle default", status: "materialized", state: "active", activity: "idle", running: true, wantIntent: genclient.Default},
 		{name: "sleeping default", status: "materialized", state: "sleeping", wantIntent: genclient.Default},
+		{name: "suspended normalizes to sleeping default", status: "materialized", state: "suspended", wantIntent: genclient.Default},
 		{name: "stopped default", status: "materialized", state: "stopped", wantIntent: genclient.Default},
+		{name: "closed normalizes to stopped default", status: "materialized", state: "closed", wantIntent: genclient.Default},
+		{name: "dead normalizes to stopped default", status: "materialized", state: "dead", wantIntent: genclient.Default},
+		{name: "exited normalizes to stopped default", status: "materialized", state: "exited", wantIntent: genclient.Default},
 		{name: "resumable default", status: "materialized", state: "resumable", wantIntent: genclient.Default},
 		{name: "unknown stopped activity", status: "materialized", state: "mystery", wantErr: "mayor_activity_unknown"},
 	}

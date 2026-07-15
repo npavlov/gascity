@@ -17,20 +17,27 @@ import (
 )
 
 type mayorReader struct {
-	status     mayor.StatusSource
-	session    mayor.SessionSource
-	pending    mayor.PendingSource
-	transcript mayor.TranscriptPageSource
+	status                                                   mayor.StatusSource
+	session                                                  mayor.SessionSource
+	pending                                                  mayor.PendingSource
+	transcript                                               mayor.TranscriptPageSource
+	statusCalls, sessionCalls, pendingCalls, transcriptCalls int
 }
 
-func (r *mayorReader) Status(context.Context) (mayor.StatusSource, error) { return r.status, nil }
+func (r *mayorReader) Status(context.Context) (mayor.StatusSource, error) {
+	r.statusCalls++
+	return r.status, nil
+}
 func (r *mayorReader) Session(context.Context, string) (mayor.SessionSource, error) {
+	r.sessionCalls++
 	return r.session, nil
 }
 func (r *mayorReader) Transcript(context.Context, string, string) (mayor.TranscriptPageSource, error) {
+	r.transcriptCalls++
 	return r.transcript, nil
 }
 func (r *mayorReader) Pending(context.Context, string) (mayor.PendingSource, error) {
+	r.pendingCalls++
 	return r.pending, nil
 }
 
@@ -120,6 +127,22 @@ func TestMayorTranscriptAndMessageHideIntent(t *testing.T) {
 	mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/v1/mayor/messages", body))
 	assert.Equal(t, http.StatusOK, recorder.Code)
 	assert.Equal(t, genclient.Default, commander.intent)
+}
+
+func TestMayorViewResolvesIdentityOnceWhileLoadingPending(t *testing.T) {
+	reader := &mayorReader{
+		status:  mayor.StatusSource{NamedSessions: []mayor.NamedSessionSource{{Identity: "pack/named.overseer", Status: "materialized"}}},
+		session: mayor.SessionSource{ID: "session-1", State: "active", Activity: "idle", Running: true, ConfiguredNamedSession: boolPointer(true)},
+		pending: mayor.PendingSource{Supported: true, Pending: &mayor.PendingInteraction{RequestID: "pending-1", Kind: "question"}},
+	}
+	mux, _ := mayorAPI(t, reader, &mayorCommander{})
+	recorder := httptest.NewRecorder()
+	mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/mayor", nil))
+	require.Equal(t, http.StatusOK, recorder.Code)
+
+	assert.Equal(t, 1, reader.statusCalls)
+	assert.Equal(t, 1, reader.sessionCalls)
+	assert.Equal(t, 1, reader.pendingCalls)
 }
 
 func TestMayorInputLimitsAndPendingBinding(t *testing.T) {

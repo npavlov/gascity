@@ -2,14 +2,16 @@ import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { connectMayorEvents, useMayor } from "./useMayor";
-import type { MayorStreamCallbacks, MayorStreamConnector } from "./useMayor";
+import type { MayorController, MayorRefreshRequester, MayorStreamCallbacks, MayorStreamConnector } from "./useMayor";
 import { createControlCenterAPI, MayorRequestError } from "@/lib/api";
 import type { MayorAPI, MayorEvent, MayorView, TranscriptPage } from "@/lib/api";
+import { createRefreshQueue } from "@/lib/events";
 
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 const view: MayorView = {
@@ -73,6 +75,158 @@ function deferred<T>() {
 }
 
 describe("useMayor", () => {
+	it("applies a valid Mayor view before a slow transcript lane settles", async () => {
+		const pendingTranscript = deferred<TranscriptPage>();
+		const api = fakeMayorAPI({
+			getMayor: vi.fn(async () => ({ ...view, session_name: "fast Mayor status" })),
+			getMayorTranscript: vi.fn(async () => pendingTranscript.promise),
+		});
+		const hook = renderHook(() => useMayor({ api, connector: () => () => undefined }));
+
+		await waitFor(() => expect(hook.result.current.view?.session_name).toBe("fast Mayor status"));
+		expect(hook.result.current.loading).toBe(false);
+		expect(hook.result.current.failureState).toBeNull();
+		expect(hook.result.current.turns).toEqual([]);
+
+		await act(async () => {
+			pendingTranscript.resolve(transcript("slow transcript settled"));
+			await pendingTranscript.promise;
+		});
+		await waitFor(() => expect(hook.result.current.turns.at(-1)?.text).toBe("slow transcript settled"));
+	});
+
+	it("keeps a valid Mayor view when the transcript lane fails", async () => {
+		const api = fakeMayorAPI({
+			getMayor: vi.fn(async () => ({ ...view, session_name: "confirmed Mayor" })),
+			getMayorTranscript: vi.fn(async () => { throw new Error("transcript offline"); }),
+		});
+		const hook = renderHook(() => useMayor({ api, connector: () => () => undefined }));
+
+		await waitFor(() => expect(hook.result.current.loading).toBe(false));
+		expect(hook.result.current.view?.session_name).toBe("confirmed Mayor");
+		expect(hook.result.current.failureState).toBeNull();
+		expect(hook.result.current.error).toBe("transcript offline");
+		expect(hook.result.current.stale).toBe(true);
+	});
+
+	it("preserves repeated identical untimestamped turns", async () => {
+		const repeated = { role: "assistant", text: "Still working" };
+		const api = fakeMayorAPI({
+			getMayorTranscript: vi.fn(async () => ({
+				...transcript(),
+				turns: [{ ...repeated }, { ...repeated }],
+				returned: 2,
+				total: 2,
+			})),
+		});
+		const hook = renderHook(() => useMayor({ api, connector: () => () => undefined }));
+
+		await waitFor(() => expect(hook.result.current.loading).toBe(false));
+		expect(hook.result.current.turns).toHaveLength(2);
+		expect(hook.result.current.turns.map((turn) => turn.text)).toEqual(["Still working", "Still working"]);
+	});
+
+	it("preserves every live turn when multiple turns share one backend cursor", async () => {
+		const feed = controlledConnector();
+		const api = fakeMayorAPI();
+		const hook = renderHook(() => useMayor({ api, connector: feed.connector }));
+		await waitFor(() => expect(hook.result.current.loading).toBe(false));
+
+		act(() => {
+			feed.callbacks().onEvent({ kind: "turn", cursor: "shared-cursor", resources: ["transcript"], turn: { role: "assistant", text: "first turn" } });
+			feed.callbacks().onEvent({ kind: "turn", cursor: "shared-cursor", resources: ["transcript"], turn: { role: "assistant", text: "second turn" } });
+		});
+
+		expect(hook.result.current.turns.slice(-2).map((turn) => turn.text)).toEqual(["first turn", "second turn"]);
+	});
+
+	it("reconciles repeated live turns against snapshot occurrences as a multiset", async () => {
+		const repeated = { role: "assistant", text: "same turn" };
+		const getMayorTranscript = vi.fn<MayorAPI["getMayorTranscript"]>()
+			.mockResolvedValueOnce(transcript())
+			.mockResolvedValue({ ...transcript(), turns: [{ ...repeated }], returned: 1, total: 1 });
+		const api = fakeMayorAPI({ getMayorTranscript });
+		const feed = controlledConnector();
+		const hook = renderHook(() => useMayor({ api, connector: feed.connector }));
+		await waitFor(() => expect(hook.result.current.loading).toBe(false));
+
+		act(() => {
+			feed.callbacks().onEvent({ kind: "turn", cursor: "shared-cursor", resources: ["transcript"], turn: { ...repeated } });
+			feed.callbacks().onEvent({ kind: "turn", cursor: "shared-cursor", resources: ["transcript"], turn: { ...repeated } });
+		});
+		await act(async () => { await hook.result.current.refresh(); });
+
+		expect(hook.result.current.turns.map((turn) => turn.text)).toEqual(["same turn", "same turn"]);
+	});
+
+	it("does not consume a new live turn with an identical historical snapshot occurrence", async () => {
+		const repeated = { role: "assistant", text: "same historical and live turn" };
+		const unchanged = { ...transcript(), turns: [{ ...repeated }], returned: 1, total: 1 };
+		const getMayorTranscript = vi.fn<MayorAPI["getMayorTranscript"]>().mockResolvedValue(unchanged);
+		const api = fakeMayorAPI({ getMayorTranscript });
+		const feed = controlledConnector();
+		const hook = renderHook(() => useMayor({ api, connector: feed.connector }));
+		await waitFor(() => expect(hook.result.current.turns).toHaveLength(1));
+
+		act(() => feed.callbacks().onEvent({ kind: "turn", cursor: "new-live", resources: ["transcript"], turn: { ...repeated } }));
+		expect(hook.result.current.turns).toHaveLength(2);
+		await act(async () => { await hook.result.current.refresh(); });
+
+		expect(hook.result.current.turns.map((turn) => turn.text)).toEqual([
+			"same historical and live turn",
+			"same historical and live turn",
+		]);
+	});
+
+	it("does not own focus, visibility, or interval polling", async () => {
+		const windowAdd = vi.spyOn(window, "addEventListener");
+		const documentAdd = vi.spyOn(document, "addEventListener");
+		const interval = vi.spyOn(window, "setInterval");
+		const api = fakeMayorAPI();
+		const connector = () => () => undefined;
+		const hook = renderHook(() => useMayor({ api, connector }));
+		await waitFor(() => expect(hook.result.current.loading).toBe(false));
+
+		expect(windowAdd.mock.calls.filter(([type]) => type === "focus")).toHaveLength(0);
+		expect(documentAdd.mock.calls.filter(([type]) => type === "visibilitychange")).toHaveLength(0);
+		expect(interval.mock.calls.filter(([, delay]) => delay === 10_000)).toHaveLength(0);
+	});
+
+	it("does not start a queued trailing refresh after unmount", async () => {
+		const blocked = deferred<TranscriptPage>();
+		const getMayorTranscript = vi.fn<MayorAPI["getMayorTranscript"]>()
+			.mockResolvedValueOnce(transcript())
+			.mockImplementationOnce(async () => blocked.promise)
+			.mockResolvedValue(transcript("obsolete trailing"));
+		const api = fakeMayorAPI({ getMayorTranscript });
+		const feed = controlledConnector();
+		let controller: MayorController | undefined;
+		const queue = createRefreshQueue(async (resources, signal) => {
+			if (!controller) return;
+			if (resources.includes("mayor-snapshots")) await controller.refreshSnapshots(signal);
+		});
+		const requestRefresh: MayorRefreshRequester = async (resources) => {
+			queue.request(resources);
+			await queue.idle();
+		};
+		const hook = renderHook(() => {
+			controller = useMayor({ api, connector: feed.connector, requestRefresh });
+			return controller;
+		});
+		await waitFor(() => expect(hook.result.current.loading).toBe(false));
+
+		act(() => feed.callbacks().onEvent({ kind: "invalidate", resources: ["transcript"] }));
+		await waitFor(() => expect(getMayorTranscript).toHaveBeenCalledTimes(2));
+		act(() => feed.callbacks().onEvent({ kind: "invalidate", resources: ["transcript"] }));
+		hook.unmount();
+		queue.dispose();
+		blocked.resolve(transcript("released after unmount"));
+		await blocked.promise;
+		await new Promise((resolve) => window.setTimeout(resolve, 0));
+
+		expect(getMayorTranscript).toHaveBeenCalledTimes(2);
+	});
+
   it("preserves the typed Mayor problem detail for visible identity failures", async () => {
     const fetcher = vi.fn(async () => new Response(JSON.stringify({
       type: "urn:gascity:control-center:mayor:mayor_identity_ambiguous",
@@ -97,7 +251,7 @@ describe("useMayor", () => {
       getMayor: vi.fn(async () => { throw new MayorRequestError(code, 409, code); }),
     });
     const feed = controlledConnector();
-    const hook = renderHook(() => useMayor({ api, visible: true, connector: feed.connector }));
+    const hook = renderHook(() => useMayor({ api, connector: feed.connector }));
     await waitFor(() => expect(hook.result.current.loading).toBe(false));
     expect(hook.result.current.failureState).toBe(failureState);
   });
@@ -107,7 +261,7 @@ describe("useMayor", () => {
     const sendMayorMessage = vi.fn(() => new Promise<{ request_id: string; status: string; intent: "default"; queued: boolean }>((resolve) => { resolveSend = resolve; }));
     const api = fakeMayorAPI({ sendMayorMessage });
     const feed = controlledConnector();
-    const hook = renderHook(() => useMayor({ api, visible: true, connector: feed.connector }));
+    const hook = renderHook(() => useMayor({ api, connector: feed.connector }));
 
     await waitFor(() => expect(hook.result.current.turns).toHaveLength(1));
     act(() => hook.result.current.setComposerDraft("new message"));
@@ -135,7 +289,7 @@ describe("useMayor", () => {
     const getMayorTranscript = vi.fn(async () => transcript());
     const api = fakeMayorAPI({ getMayor, getMayorTranscript });
     const feed = controlledConnector();
-    const hook = renderHook(() => useMayor({ api, visible: true, connector: feed.connector }));
+    const hook = renderHook(() => useMayor({ api, connector: feed.connector }));
     await waitFor(() => expect(hook.result.current.loading).toBe(false));
     const viewCalls = getMayor.mock.calls.length;
     const transcriptCalls = getMayorTranscript.mock.calls.length;
@@ -148,20 +302,19 @@ describe("useMayor", () => {
     expect(hook.result.current.stale).toBe(false);
   });
 
-  it("pauses polling while hidden and refreshes on focus restore", async () => {
-    vi.useFakeTimers();
+  it("exposes a status-only refresh action without refreshing transcript", async () => {
     const getMayor = vi.fn(async () => view);
-    const api = fakeMayorAPI({ getMayor });
+    const getMayorTranscript = vi.fn(async () => transcript());
+    const api = fakeMayorAPI({ getMayor, getMayorTranscript });
     const feed = controlledConnector();
-    const hook = renderHook(({ visible }) => useMayor({ api, visible, connector: feed.connector, pollInterval: 20 }), { initialProps: { visible: false } });
-    await act(async () => { await Promise.resolve(); });
-    const hiddenCalls = getMayor.mock.calls.length;
-    await act(async () => { await vi.advanceTimersByTimeAsync(60); });
-    expect(getMayor).toHaveBeenCalledTimes(hiddenCalls);
+    const hook = renderHook(() => useMayor({ api, connector: feed.connector }));
+    await waitFor(() => expect(hook.result.current.loading).toBe(false));
+    const viewCalls = getMayor.mock.calls.length;
+    const transcriptCalls = getMayorTranscript.mock.calls.length;
 
-    hook.rerender({ visible: true });
-    await act(async () => { window.dispatchEvent(new Event("focus")); await Promise.resolve(); });
-    expect(getMayor.mock.calls.length).toBeGreaterThan(hiddenCalls);
+    await act(async () => { await hook.result.current.refreshStatus(); });
+    expect(getMayor).toHaveBeenCalledTimes(viewCalls + 1);
+    expect(getMayorTranscript).toHaveBeenCalledTimes(transcriptCalls);
   });
 
   it("merges older transcript chronologically without duplicates", async () => {
@@ -169,17 +322,19 @@ describe("useMayor", () => {
     const getMayorTranscript = vi.fn(async (before?: string) => before ? older : transcript());
     const feed = controlledConnector();
     const api = fakeMayorAPI({ getMayorTranscript });
-    const hook = renderHook(() => useMayor({ api, visible: true, connector: feed.connector }));
+    const hook = renderHook(() => useMayor({ api, connector: feed.connector }));
     await waitFor(() => expect(hook.result.current.turns).toHaveLength(1));
     await act(async () => { await hook.result.current.loadOlder(); });
     expect(hook.result.current.turns.map((turn) => turn.text)).toEqual(["older turn", "existing"]);
     await act(async () => { await hook.result.current.loadOlder(); });
     expect(hook.result.current.turns).toHaveLength(2);
+    await act(async () => { await hook.result.current.refresh(); });
+    expect(hook.result.current.turns.map((turn) => turn.text)).toEqual(["older turn", "existing"]);
   });
 
   it("updates activity and pending hints without accepting malformed resources", async () => {
     const feed = controlledConnector();
-    const hook = renderHook(() => useMayor({ api: fakeMayorAPI(), visible: true, connector: feed.connector }));
+    const hook = renderHook(() => useMayor({ api: fakeMayorAPI(), connector: feed.connector }));
     await waitFor(() => expect(hook.result.current.view).not.toBeNull());
     const events: MayorEvent[] = [
       { kind: "activity", activity: "in-turn", resources: ["mayor"] },
@@ -203,7 +358,7 @@ describe("useMayor", () => {
       })),
       respondMayorInteraction,
     });
-    const hook = renderHook(() => useMayor({ api, visible: true, connector: feed.connector }));
+    const hook = renderHook(() => useMayor({ api, connector: feed.connector }));
     await waitFor(() => expect(hook.result.current.view?.pending?.request_id).toBe("prompt-a"));
     act(() => hook.result.current.setPendingDraft("answer meant only for A"));
 
@@ -226,7 +381,19 @@ describe("useMayor", () => {
       .mockResolvedValue(transcript("reconciled"));
     const api = fakeMayorAPI({ getMayorTranscript });
     const feed = controlledConnector();
-    const hook = renderHook(() => useMayor({ api, visible: true, connector: feed.connector }));
+    let controller: MayorController | undefined;
+    const queue = createRefreshQueue(async (resources, signal) => {
+      if (!controller) return;
+      if (resources.includes("mayor-snapshots")) await controller.refreshSnapshots(signal);
+    });
+    const requestRefresh: MayorRefreshRequester = async (resources) => {
+      queue.request(resources);
+      await queue.idle();
+    };
+    const hook = renderHook(() => {
+      controller = useMayor({ api, connector: feed.connector, requestRefresh });
+      return controller;
+    });
     await waitFor(() => expect(hook.result.current.turns).toHaveLength(1));
 
     act(() => feed.callbacks().onEvent({ kind: "invalidate", resources: ["transcript"] }));
@@ -243,6 +410,7 @@ describe("useMayor", () => {
     expect(hook.result.current.turns.map((turn) => turn.text)).toContain("live during refresh");
     await new Promise((resolve) => window.setTimeout(resolve, 0));
     expect(getMayorTranscript).toHaveBeenCalledTimes(3);
+    queue.dispose();
   });
 
   it("keeps last-good data visibly stale when a visible poll fails and does not poll transcript", async () => {
@@ -252,11 +420,11 @@ describe("useMayor", () => {
     const getMayorTranscript = vi.fn(async () => transcript());
     const api = fakeMayorAPI({ getMayor, getMayorTranscript });
     const feed = controlledConnector();
-    const hook = renderHook(() => useMayor({ api, visible: true, connector: feed.connector }));
+    const hook = renderHook(() => useMayor({ api, connector: feed.connector }));
     await waitFor(() => expect(hook.result.current.loading).toBe(false));
     const transcriptCalls = getMayorTranscript.mock.calls.length;
 
-    act(() => window.dispatchEvent(new Event("focus")));
+    await act(async () => { await hook.result.current.refreshStatus(); });
     await waitFor(() => expect(hook.result.current.error).toBe("Mayor status offline"));
     expect(hook.result.current.stale).toBe(true);
     expect(hook.result.current.turns.map((turn) => turn.text)).toEqual(["existing"]);
@@ -271,12 +439,12 @@ describe("useMayor", () => {
       .mockResolvedValueOnce({ ...view, session_name: "newer status poll" });
     const feed = controlledConnector();
     const api = fakeMayorAPI({ getMayor });
-    const hook = renderHook(() => useMayor({ api, visible: true, connector: feed.connector }));
+    const hook = renderHook(() => useMayor({ api, connector: feed.connector }));
     await waitFor(() => expect(hook.result.current.loading).toBe(false));
 
     act(() => feed.callbacks().onEvent({ kind: "invalidate", resources: ["mayor"] }));
     await waitFor(() => expect(getMayor).toHaveBeenCalledTimes(2));
-    act(() => window.dispatchEvent(new Event("focus")));
+    await act(async () => { await hook.result.current.refreshStatus(); });
     await waitFor(() => expect(hook.result.current.view?.session_name).toBe("newer status poll"));
 
     await act(async () => {
@@ -284,6 +452,35 @@ describe("useMayor", () => {
       await olderFull.promise;
     });
     expect(hook.result.current.view?.session_name).toBe("newer status poll");
+  });
+
+  it("does not let an older full refresh re-mark a newer full snapshot stale", async () => {
+    const olderView = deferred<MayorView>();
+    const olderTranscript = deferred<TranscriptPage>();
+    const getMayor = vi.fn<MayorAPI["getMayor"]>()
+      .mockImplementationOnce(async () => olderView.promise)
+      .mockResolvedValue({ ...view, session_name: "newer full snapshot" });
+    const getMayorTranscript = vi.fn<MayorAPI["getMayorTranscript"]>()
+      .mockImplementationOnce(async () => olderTranscript.promise)
+      .mockResolvedValue(transcript("newer transcript"));
+    const api = fakeMayorAPI({ getMayor, getMayorTranscript });
+    const hook = renderHook(() => useMayor({ api, connector: () => () => undefined }));
+    await waitFor(() => expect(getMayor).toHaveBeenCalledTimes(1));
+
+    await act(async () => { await hook.result.current.refreshSnapshots(); });
+    expect(hook.result.current.view?.session_name).toBe("newer full snapshot");
+    expect(hook.result.current.stale).toBe(false);
+
+    await act(async () => {
+      olderView.resolve({ ...view, session_name: "older full snapshot" });
+      olderTranscript.resolve(transcript("older transcript"));
+      await Promise.all([olderView.promise, olderTranscript.promise]);
+    });
+    await act(async () => { await Promise.resolve(); });
+
+    expect(hook.result.current.view?.session_name).toBe("newer full snapshot");
+    expect(hook.result.current.turns.at(-1)?.text).toBe("newer transcript");
+    expect(hook.result.current.stale).toBe(false);
   });
 
   it("ignores an older status failure after a newer full refresh succeeds", async () => {
@@ -294,17 +491,18 @@ describe("useMayor", () => {
       .mockResolvedValueOnce({ ...view, session_name: "newer full refresh" });
     const api = fakeMayorAPI({ getMayor });
     const feed = controlledConnector();
-    const hook = renderHook(() => useMayor({ api, visible: true, connector: feed.connector }));
+    const hook = renderHook(() => useMayor({ api, connector: feed.connector }));
     await waitFor(() => expect(hook.result.current.loading).toBe(false));
 
-    act(() => window.dispatchEvent(new Event("focus")));
+    let pendingPoll!: Promise<boolean>;
+    act(() => { pendingPoll = hook.result.current.refreshStatus(); });
     await waitFor(() => expect(getMayor).toHaveBeenCalledTimes(2));
     act(() => feed.callbacks().onEvent({ kind: "invalidate", resources: ["mayor"] }));
     await waitFor(() => expect(hook.result.current.view?.session_name).toBe("newer full refresh"));
 
     await act(async () => {
       olderPoll.reject(new Error("older poll failed"));
-      await Promise.resolve();
+      await pendingPoll;
     });
     expect(hook.result.current.error).toBeNull();
     expect(hook.result.current.stale).toBe(false);
@@ -318,12 +516,12 @@ describe("useMayor", () => {
       .mockRejectedValueOnce(new Error("newer poll failed"));
     const api = fakeMayorAPI({ getMayor });
     const feed = controlledConnector();
-    const hook = renderHook(() => useMayor({ api, visible: true, connector: feed.connector }));
+    const hook = renderHook(() => useMayor({ api, connector: feed.connector }));
     await waitFor(() => expect(hook.result.current.loading).toBe(false));
 
     act(() => feed.callbacks().onEvent({ kind: "invalidate", resources: ["mayor"] }));
     await waitFor(() => expect(getMayor).toHaveBeenCalledTimes(2));
-    act(() => window.dispatchEvent(new Event("focus")));
+    await act(async () => { await hook.result.current.refreshStatus(); });
     await waitFor(() => expect(hook.result.current.error).toBe("newer poll failed"));
 
     await act(async () => {

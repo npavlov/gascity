@@ -20,6 +20,24 @@ type Service struct {
 	lastGood  *MayorView
 }
 
+// SnapshotOptions selects the authoritative Mayor resources read after one
+// exact identity resolution. A nil TranscriptBefore omits transcript I/O.
+type SnapshotOptions struct {
+	AllowStale       bool
+	TranscriptBefore *string
+	IncludePending   bool
+}
+
+// SnapshotResult keeps independently requested resource failures visible to
+// callers while sharing one resolved Mayor identity.
+type SnapshotResult struct {
+	View            MayorView
+	Transcript      *TranscriptPage
+	Pending         *PendingInteraction
+	TranscriptError error
+	PendingError    error
+}
+
 // NewService constructs a Mayor service for one exact configured identity.
 func NewService(identity string, reader Reader, commander Commander) (*Service, error) {
 	identity = strings.TrimSpace(identity)
@@ -37,9 +55,13 @@ func (s *Service) Identity() string { return s.identity }
 
 // Get resolves the current Mayor state without creating or waking a session.
 func (s *Service) Get(ctx context.Context) (MayorView, error) {
+	return s.resolvedView(ctx, true)
+}
+
+func (s *Service) resolvedView(ctx context.Context, allowStale bool) (MayorView, error) {
 	view, err := s.fresh(ctx)
 	if err != nil {
-		if isStatusDisconnected(err) && s.cached(&view) {
+		if allowStale && isStatusDisconnected(err) && s.cached(&view) {
 			view.Stale = true
 			view.Degraded = true
 			view.Problems = append(view.Problems, MayorProblem{Code: "mayor_disconnected", Source: "status", Detail: err.Error(), Retryable: true})
@@ -48,6 +70,37 @@ func (s *Service) Get(ctx context.Context) (MayorView, error) {
 		return view, err
 	}
 	return view, nil
+}
+
+// Snapshot resolves the configured Mayor once, then reads only the selected
+// transcript and pending resources against that proof.
+func (s *Service) Snapshot(ctx context.Context, options SnapshotOptions) (SnapshotResult, error) {
+	view, err := s.resolvedView(ctx, options.AllowStale)
+	result := SnapshotResult{View: view}
+	if err != nil {
+		return result, err
+	}
+	if options.TranscriptBefore != nil {
+		page := TranscriptPage{Turns: []TranscriptTurn{}, Problems: append([]MayorProblem(nil), view.Problems...), Degraded: view.Degraded, Stale: view.Stale}
+		if view.Materialized && !view.Stale {
+			source, readErr := s.reader.Transcript(ctx, s.identity, *options.TranscriptBefore)
+			if readErr != nil {
+				result.TranscriptError = readErr
+			} else {
+				page = TranscriptPage{Turns: source.Turns, HasOlder: source.HasOlder, Before: source.Before, Returned: source.Returned, Total: source.Total, Degraded: len(source.Problems) > 0, Problems: source.Problems}
+			}
+		}
+		result.Transcript = &page
+	}
+	if options.IncludePending && view.Materialized && !view.Stale {
+		source, readErr := s.reader.Pending(ctx, s.identity)
+		if readErr != nil {
+			result.PendingError = readErr
+		} else if source.Supported {
+			result.Pending = clonePending(source.Pending)
+		}
+	}
+	return result, nil
 }
 
 func (s *Service) fresh(ctx context.Context) (MayorView, error) {
@@ -122,11 +175,12 @@ func (s *Service) resolve(ctx context.Context, refresh404 bool) (MayorView, erro
 }
 
 func normalizeState(session SessionSource) MayorState {
-	if session.Activity == "in-turn" {
+	activity := strings.ToLower(strings.TrimSpace(session.Activity))
+	if activity == "in-turn" {
 		return StateInTurn
 	}
 	state := strings.ToLower(strings.TrimSpace(session.State))
-	if session.Activity == "idle" || (session.Running && state == "active") {
+	if activity == "idle" || (session.Running && state == "active") {
 		return StateIdle
 	}
 	switch state {
@@ -140,43 +194,35 @@ func normalizeState(session SessionSource) MayorState {
 		if session.Running {
 			return StateIdle
 		}
-		return StateStopped
+		return StateUnsupported
 	}
 }
 
 // Transcript reads a conversation page only after exact identity resolution.
 func (s *Service) Transcript(ctx context.Context, before string) (TranscriptPage, error) {
-	view, err := s.fresh(ctx)
+	snapshot, err := s.Snapshot(ctx, SnapshotOptions{TranscriptBefore: &before})
 	if err != nil {
 		return TranscriptPage{}, err
 	}
-	if !view.Materialized {
-		return TranscriptPage{Turns: []TranscriptTurn{}, Problems: append([]MayorProblem(nil), view.Problems...), Degraded: view.Degraded, Stale: view.Stale}, nil
+	if snapshot.TranscriptError != nil {
+		return TranscriptPage{}, snapshot.TranscriptError
 	}
-	source, err := s.reader.Transcript(ctx, s.identity, before)
-	if err != nil {
-		return TranscriptPage{}, err
+	if snapshot.Transcript == nil {
+		return TranscriptPage{Turns: []TranscriptTurn{}}, nil
 	}
-	return TranscriptPage{Turns: source.Turns, HasOlder: source.HasOlder, Before: source.Before, Returned: source.Returned, Total: source.Total, Degraded: len(source.Problems) > 0, Problems: source.Problems}, nil
+	return *snapshot.Transcript, nil
 }
 
 // Pending reads the current prompt only after exact identity resolution.
 func (s *Service) Pending(ctx context.Context) (*PendingInteraction, error) {
-	view, err := s.fresh(ctx)
+	snapshot, err := s.Snapshot(ctx, SnapshotOptions{IncludePending: true})
 	if err != nil {
 		return nil, err
 	}
-	if !view.Materialized {
-		return nil, nil
+	if snapshot.PendingError != nil {
+		return nil, snapshot.PendingError
 	}
-	source, err := s.reader.Pending(ctx, s.identity)
-	if err != nil {
-		return nil, err
-	}
-	if !source.Supported {
-		return nil, &Error{Code: "mayor_pending_unsupported", Detail: "configured Mayor provider does not support pending interactions", StatusCode: http.StatusConflict}
-	}
-	return clonePending(source.Pending), nil
+	return clonePending(snapshot.Pending), nil
 }
 
 // Submit safely derives intent server-side and correlates the async result.
@@ -187,21 +233,18 @@ func (s *Service) Submit(ctx context.Context, message string) (MessageReceipt, e
 	}
 	intent := genclient.Default
 	if view.Materialized {
-		switch view.Activity {
-		case "in-turn":
+		activity := strings.ToLower(strings.TrimSpace(view.Activity))
+		if view.Running && activity != "idle" && activity != "in-turn" {
+			return MessageReceipt{}, unknownMayorActivity()
+		}
+		switch view.State {
+		case StateInTurn:
 			if !view.FollowUpSupported {
 				return MessageReceipt{}, &Error{Code: "follow_up_unsupported", Detail: "Mayor is active but this provider does not support follow-up", StatusCode: http.StatusConflict}
 			}
 			intent = genclient.FollowUp
-		case "idle":
-			// An explicitly idle materialized session accepts a default submit.
-		case "":
-			switch strings.ToLower(strings.TrimSpace(view.Lifecycle)) {
-			case "sleeping", "stopped", "resumable":
-				// These explicit lifecycle states accept a default submit.
-			default:
-				return MessageReceipt{}, unknownMayorActivity()
-			}
+		case StateIdle, StateSleeping, StateStopped:
+			// Exact normalized idle, sleeping and stopped states accept default.
 		default:
 			return MessageReceipt{}, unknownMayorActivity()
 		}

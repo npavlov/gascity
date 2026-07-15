@@ -164,7 +164,10 @@ func (c *Client) Transcript(ctx context.Context, identity, before string) (Trans
 	if body.Turns != nil {
 		result.Turns = make([]TranscriptTurn, 0, len(*body.Turns))
 		for _, turn := range *body.Turns {
-			projected := TranscriptTurn{Role: turn.Role, Text: turn.Text}
+			projected, err := projectTranscriptTurn(turn.Role, turn.Text)
+			if err != nil {
+				return TranscriptPageSource{}, err
+			}
 			if turn.Timestamp != nil && *turn.Timestamp != "" {
 				parsed, parseErr := time.Parse(time.RFC3339Nano, *turn.Timestamp)
 				if parseErr != nil {
@@ -206,7 +209,11 @@ func (c *Client) Pending(ctx context.Context, identity string) (PendingSource, e
 	}); err != nil {
 		return PendingSource{}, err
 	}
-	return PendingSource{Supported: response.JSON200.Supported, Pending: projectPending(response.JSON200.Pending)}, nil
+	pending, err := projectPending(response.JSON200.Pending)
+	if err != nil {
+		return PendingSource{}, err
+	}
+	return PendingSource{Supported: response.JSON200.Supported, Pending: pending}, nil
 }
 
 // Submit sends one safe, server-derived intent to the exact configured identity.
@@ -364,7 +371,10 @@ func (s *sessionStream) Recv() (SessionEvent, error) {
 			}
 			turns := make([]TranscriptTurn, 0, len(*payload.Turns))
 			for _, source := range *payload.Turns {
-				turn := TranscriptTurn{Role: source.Role, Text: source.Text}
+				turn, err := projectTranscriptTurn(source.Role, source.Text)
+				if err != nil {
+					return SessionEvent{}, err
+				}
 				if source.Timestamp != nil && *source.Timestamp != "" {
 					parsed, parseErr := time.Parse(time.RFC3339Nano, *source.Timestamp)
 					if parseErr == nil {
@@ -385,7 +395,11 @@ func (s *sessionStream) Recv() (SessionEvent, error) {
 			if err := json.Unmarshal(frame.Data, &payload); err != nil {
 				return SessionEvent{}, &UpstreamError{Code: "upstream_protocol", Detail: fmt.Sprintf("decode Mayor pending event: %v", err)}
 			}
-			return SessionEvent{Kind: "pending", Cursor: frame.ID, Pending: projectPending(&payload)}, nil
+			pending, err := projectPending(&payload)
+			if err != nil {
+				return SessionEvent{}, err
+			}
+			return SessionEvent{Kind: "pending", Cursor: frame.ID, Pending: pending}, nil
 		case "heartbeat", "message", "":
 			continue
 		default:
@@ -466,9 +480,19 @@ func (d *sseDecoder) Next() (sseFrame, error) {
 	return sseFrame{}, io.EOF
 }
 
-func projectPending(source *genclient.PendingInteraction) *PendingInteraction {
+func projectTranscriptTurn(role, text string) (TranscriptTurn, error) {
+	if strings.TrimSpace(role) == "" || strings.TrimSpace(text) == "" {
+		return TranscriptTurn{}, &UpstreamError{Code: "upstream_protocol", StatusCode: http.StatusOK, Detail: "Supervisor Mayor transcript turn omitted role or text"}
+	}
+	return TranscriptTurn{Role: role, Text: text}, nil
+}
+
+func projectPending(source *genclient.PendingInteraction) (*PendingInteraction, error) {
 	if source == nil {
-		return nil
+		return nil, nil
+	}
+	if strings.TrimSpace(source.RequestId) == "" || strings.TrimSpace(source.Kind) == "" {
+		return nil, &UpstreamError{Code: "upstream_protocol", StatusCode: http.StatusOK, Detail: "Supervisor Mayor pending interaction omitted request_id or kind"}
 	}
 	result := &PendingInteraction{RequestID: source.RequestId, Kind: source.Kind, Metadata: map[string]string{}, Options: []string{}}
 	if source.Prompt != nil {
@@ -480,7 +504,7 @@ func projectPending(source *genclient.PendingInteraction) *PendingInteraction {
 	if source.Metadata != nil {
 		result.Metadata = cloneMetadata(*source.Metadata)
 	}
-	return result
+	return result, nil
 }
 
 type responseShape[T any] func(*T) (status int, problem *genclient.ErrorModel, hasBody bool)

@@ -13,13 +13,14 @@ const defaultMayorPollInterval = 10 * time.Second
 var (
 	errMayorDormant              = errors.New("configured Mayor is not materialized")
 	errMayorDiscoveryUnavailable = errors.New("configured Mayor discovery is unavailable")
+	errMayorRefreshUnavailable   = errors.New("configured Mayor authoritative refresh is unavailable")
+	errMayorHubStopped           = errors.New("Mayor event hub stopped")
 )
 
 type snapshotSource interface {
 	Identity() string
 	Get(context.Context) (MayorView, error)
-	Transcript(context.Context, string) (TranscriptPage, error)
-	Pending(context.Context) (*PendingInteraction, error)
+	Snapshot(context.Context, SnapshotOptions) (SnapshotResult, error)
 }
 
 // Hub owns the single upstream stream for the configured Mayor identity.
@@ -29,9 +30,11 @@ type Hub struct {
 	pollInterval time.Duration
 	backoff      []time.Duration
 
+	lifecycle   sync.Mutex
 	mu          sync.Mutex
 	subscribers map[uint64]chan MayorEvent
 	nextID      uint64
+	stopped     bool
 	cancel      context.CancelFunc
 	done        chan struct{}
 	current     SessionEventStream
@@ -50,11 +53,14 @@ func NewHub(snapshot snapshotSource, source StreamSource) (*Hub, error) {
 
 // Start begins discovery polling and live relay. It is idempotent while running.
 func (h *Hub) Start(ctx context.Context) error {
+	h.lifecycle.Lock()
+	defer h.lifecycle.Unlock()
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.cancel != nil {
 		return nil
 	}
+	h.stopped = false
 	runCtx, cancel := context.WithCancel(ctx)
 	h.cancel = cancel
 	h.done = make(chan struct{})
@@ -64,23 +70,26 @@ func (h *Hub) Start(ctx context.Context) error {
 
 // Stop cancels the relay, closes the active body, and waits for shutdown.
 func (h *Hub) Stop() {
+	h.lifecycle.Lock()
+	defer h.lifecycle.Unlock()
 	h.mu.Lock()
 	cancel := h.cancel
 	done := h.done
 	current := h.current
 	h.cancel = nil
 	h.done = nil
+	h.stopped = true
 	h.mu.Unlock()
-	if cancel == nil {
-		return
+	if cancel != nil {
+		cancel()
+		if current != nil {
+			_ = current.Close()
+		}
+		if done != nil {
+			<-done
+		}
 	}
-	cancel()
-	if current != nil {
-		_ = current.Close()
-	}
-	if done != nil {
-		<-done
-	}
+	h.closeSubscriptions()
 }
 
 func (h *Hub) run(ctx context.Context, done chan struct{}) {
@@ -151,11 +160,9 @@ func (h *Hub) run(ctx context.Context, done chan struct{}) {
 }
 
 func (h *Hub) refresh(ctx context.Context) bool {
-	if _, err := h.snapshot.Transcript(ctx, ""); err != nil {
-		h.publish(MayorEvent{Kind: "stale", Resources: []string{"mayor", "transcript", "pending"}})
-		return false
-	}
-	if _, err := h.snapshot.Pending(ctx); err != nil {
+	before := ""
+	snapshot, err := h.snapshot.Snapshot(ctx, SnapshotOptions{TranscriptBefore: &before, IncludePending: true})
+	if err != nil || snapshot.TranscriptError != nil || snapshot.PendingError != nil {
 		h.publish(MayorEvent{Kind: "stale", Resources: []string{"mayor", "transcript", "pending"}})
 		return false
 	}
@@ -170,6 +177,38 @@ func (h *Hub) consume(ctx context.Context, stream SessionEventStream, attempt *i
 	}
 	receiveCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	refreshCtx, cancelRefresh := context.WithCancel(ctx)
+	refreshRequests := make(chan struct{}, 1)
+	refreshFailed := make(chan error, 1)
+	var refreshWorkers sync.WaitGroup
+	refreshWorkers.Add(1)
+	go func() {
+		defer refreshWorkers.Done()
+		for {
+			select {
+			case <-refreshCtx.Done():
+				return
+			case <-refreshRequests:
+				if !h.refresh(refreshCtx) {
+					select {
+					case refreshFailed <- errMayorRefreshUnavailable:
+					case <-refreshCtx.Done():
+					}
+					return
+				}
+			}
+		}
+	}()
+	defer func() {
+		cancelRefresh()
+		refreshWorkers.Wait()
+	}()
+	requestRefresh := func() {
+		select {
+		case refreshRequests <- struct{}{}:
+		default:
+		}
+	}
 	received := make(chan receiveResult, 1)
 	go func() {
 		for {
@@ -190,6 +229,8 @@ func (h *Hub) consume(ctx context.Context, stream SessionEventStream, attempt *i
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case err := <-refreshFailed:
+			return err
 		case <-ticker.C:
 			view, err := h.snapshot.Get(ctx)
 			if err != nil || view.Stale {
@@ -209,10 +250,13 @@ func (h *Hub) consume(ctx context.Context, stream SessionEventStream, attempt *i
 					turn := result.event.Turns[index]
 					h.publish(MayorEvent{Kind: "turn", Cursor: result.event.Cursor, Turn: &turn, Resources: []string{"transcript"}})
 				}
+				requestRefresh()
 			case "activity":
 				h.publish(MayorEvent{Kind: "activity", Cursor: result.event.Cursor, Activity: result.event.Activity, Resources: []string{"mayor"}})
+				requestRefresh()
 			case "pending":
 				h.publish(MayorEvent{Kind: "pending", Cursor: result.event.Cursor, Pending: clonePending(result.event.Pending), Resources: []string{"pending"}})
+				requestRefresh()
 			}
 		}
 	}
@@ -234,13 +278,26 @@ func (h *Hub) setCurrent(stream SessionEventStream) {
 	h.mu.Unlock()
 }
 
-// Subscribe creates a bounded latest-event subscription.
+func (h *Hub) closeSubscriptions() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for id, subscriber := range h.subscribers {
+		close(subscriber)
+		delete(h.subscribers, id)
+	}
+}
+
+// Subscribe creates a bounded semantically coalesced subscription.
 func (h *Hub) Subscribe() *Subscription {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.nextID++
 	id := h.nextID
 	channel := make(chan MayorEvent, 1)
+	if h.stopped {
+		close(channel)
+		return &Subscription{hub: h, id: id, events: channel}
+	}
 	h.subscribers[id] = channel
 	return &Subscription{hub: h, id: id, events: channel}
 }
@@ -249,22 +306,52 @@ func (h *Hub) publish(event MayorEvent) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for _, subscriber := range h.subscribers {
+		delivery := event
 		select {
-		case subscriber <- event:
+		case subscriber <- delivery:
 		default:
 			select {
-			case <-subscriber:
+			case queued := <-subscriber:
+				delivery = coalesceMayorEvents(queued, delivery)
 			default:
 			}
-			select {
-			case subscriber <- event:
-			default:
-			}
+			subscriber <- delivery
 		}
 	}
 }
 
-// Subscription consumes one coalesced Mayor event at a time.
+func coalesceMayorEvents(queued, incoming MayorEvent) MayorEvent {
+	resources := mergeMayorResources(queued.Resources, incoming.Resources)
+	if incoming.Kind == "stale" {
+		incoming.Resources = resources
+		return incoming
+	}
+	if queued.Kind == incoming.Kind {
+		switch incoming.Kind {
+		case "activity", "pending", "stale", "invalidate":
+			incoming.Resources = resources
+			return incoming
+		}
+	}
+	return MayorEvent{Kind: "invalidate", Cursor: incoming.Cursor, Resources: resources}
+}
+
+func mergeMayorResources(groups ...[]string) []string {
+	seen := make(map[string]struct{})
+	resources := make([]string, 0)
+	for _, group := range groups {
+		for _, resource := range group {
+			if _, exists := seen[resource]; exists {
+				continue
+			}
+			seen[resource] = struct{}{}
+			resources = append(resources, resource)
+		}
+	}
+	return resources
+}
+
+// Subscription consumes one semantically coalesced Mayor event at a time.
 type Subscription struct {
 	hub    *Hub
 	id     uint64
@@ -275,7 +362,10 @@ type Subscription struct {
 // Next waits for the next Mayor event or context cancellation.
 func (s *Subscription) Next(ctx context.Context) (MayorEvent, error) {
 	select {
-	case event := <-s.events:
+	case event, ok := <-s.events:
+		if !ok {
+			return MayorEvent{}, errMayorHubStopped
+		}
 		return event, nil
 	case <-ctx.Done():
 		return MayorEvent{}, ctx.Err()

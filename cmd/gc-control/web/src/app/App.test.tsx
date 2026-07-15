@@ -21,7 +21,11 @@ import type {
 import type { EventSourceFactory, EventSourceLike } from "@/lib/events";
 import type { MayorStreamConnector } from "@/features/mayor/useMayor";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
 
 function fakeAPI(result: Health | Error | Promise<Health>): ControlCenterAPI {
   return {
@@ -207,6 +211,32 @@ describe("App", () => {
     expect(screen.getByLabelText("Mayor transcript")).toHaveProperty("scrollTop", 42);
     expect(connector).toHaveBeenCalledOnce();
   });
+
+	it("uses one App-owned focus and visibility polling coordinator after Mayor opens", async () => {
+		const user = userEvent.setup();
+		const windowAdd = vi.spyOn(window, "addEventListener");
+		const documentAdd = vi.spyOn(document, "addEventListener");
+		const interval = vi.spyOn(window, "setInterval");
+		const urls: string[] = [];
+		class CapturingEventSource implements EventSourceLike {
+			onopen: ((event: Event) => void) | null = null;
+			onerror: ((event: Event) => void) | null = null;
+			constructor(url: string) { urls.push(url); }
+			addEventListener() { return undefined; }
+			removeEventListener() { return undefined; }
+			close() { return undefined; }
+		}
+		vi.stubGlobal("EventSource", CapturingEventSource);
+		const api = fullAPI({ ...mayorMethods() });
+		render(<App api={api} eventSourceFactory={(url) => new CapturingEventSource(url)} />);
+
+		await user.click(await screen.findByRole("tab", { name: "Mayor" }));
+		await screen.findByRole("heading", { name: "Mayor conversation" });
+		expect(windowAdd.mock.calls.filter(([type]) => type === "focus")).toHaveLength(1);
+		expect(documentAdd.mock.calls.filter(([type]) => type === "visibilitychange")).toHaveLength(1);
+		expect(interval.mock.calls.filter(([, delay]) => delay === 10_000)).toHaveLength(1);
+		expect(urls.sort()).toEqual(["/api/v1/events", "/api/v1/mayor/events"]);
+	});
 
   it("preserves the pending draft and in-flight Mayor mutation while its tab is unmounted", async () => {
     const user = userEvent.setup();

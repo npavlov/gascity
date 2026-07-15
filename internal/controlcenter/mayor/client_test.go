@@ -75,6 +75,143 @@ func newFakeClient(t *testing.T, typed *fakeSupervisorAPI, raw *fakeRawAPI) *Cli
 	return client
 }
 
+func runClientOperationMatrix(t *testing.T, invoke func(*testing.T, string) error) {
+	t.Helper()
+	tests := []struct {
+		name, mode, wantCode string
+	}{
+		{name: "transport", mode: "transport", wantCode: "upstream_unavailable"},
+		{name: "nil response", mode: "nil_response", wantCode: "upstream_protocol"},
+		{name: "typed non success", mode: "non_success", wantCode: "upstream_http"},
+		{name: "expected status nil body", mode: "nil_body", wantCode: "upstream_protocol"},
+		{name: "valid body", mode: "valid"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := invoke(t, tt.mode)
+			if tt.wantCode == "" {
+				require.NoError(t, err)
+				return
+			}
+			var upstream *UpstreamError
+			require.ErrorAs(t, err, &upstream)
+			assert.Equal(t, tt.wantCode, upstream.Code)
+		})
+	}
+}
+
+func TestClientOperationFailureMatrices(t *testing.T) {
+	t.Run("session", func(t *testing.T) {
+		runClientOperationMatrix(t, func(t *testing.T, mode string) error {
+			t.Helper()
+			typed := &fakeSupervisorAPI{sessionFn: func(context.Context, string, string, *genclient.GetV0CityByCityNameSessionByIdParams) (*genclient.GetV0CityByCityNameSessionByIdResponse, error) {
+				switch mode {
+				case "transport":
+					return nil, errors.New("dial failed")
+				case "nil_response":
+					return nil, nil
+				case "non_success":
+					return &genclient.GetV0CityByCityNameSessionByIdResponse{HTTPResponse: response(http.StatusServiceUnavailable), ApplicationproblemJSONDefault: &genclient.ErrorModel{}}, nil
+				case "nil_body":
+					return &genclient.GetV0CityByCityNameSessionByIdResponse{HTTPResponse: response(http.StatusOK)}, nil
+				default:
+					return &genclient.GetV0CityByCityNameSessionByIdResponse{HTTPResponse: response(http.StatusOK), JSON200: &genclient.SessionResponse{Id: "session-1"}}, nil
+				}
+			}}
+			_, err := newFakeClient(t, typed, nil).Session(context.Background(), "named")
+			return err
+		})
+	})
+
+	t.Run("transcript", func(t *testing.T) {
+		runClientOperationMatrix(t, func(t *testing.T, mode string) error {
+			t.Helper()
+			typed := &fakeSupervisorAPI{transcriptFn: func(context.Context, string, string, *genclient.GetV0CityByCityNameSessionByIdTranscriptParams) (*genclient.GetV0CityByCityNameSessionByIdTranscriptResponse, error) {
+				switch mode {
+				case "transport":
+					return nil, errors.New("dial failed")
+				case "nil_response":
+					return nil, nil
+				case "non_success":
+					return &genclient.GetV0CityByCityNameSessionByIdTranscriptResponse{HTTPResponse: response(http.StatusServiceUnavailable), ApplicationproblemJSONDefault: &genclient.ErrorModel{}}, nil
+				case "nil_body":
+					return &genclient.GetV0CityByCityNameSessionByIdTranscriptResponse{HTTPResponse: response(http.StatusOK)}, nil
+				default:
+					return &genclient.GetV0CityByCityNameSessionByIdTranscriptResponse{HTTPResponse: response(http.StatusOK), JSON200: &genclient.SessionTranscriptGetResponse{Format: "conversation"}}, nil
+				}
+			}}
+			_, err := newFakeClient(t, typed, nil).Transcript(context.Background(), "named", "")
+			return err
+		})
+	})
+
+	t.Run("pending", func(t *testing.T) {
+		runClientOperationMatrix(t, func(t *testing.T, mode string) error {
+			t.Helper()
+			typed := &fakeSupervisorAPI{pendingFn: func(context.Context, string, string) (*genclient.GetV0CityByCityNameSessionByIdPendingResponse, error) {
+				switch mode {
+				case "transport":
+					return nil, errors.New("dial failed")
+				case "nil_response":
+					return nil, nil
+				case "non_success":
+					return &genclient.GetV0CityByCityNameSessionByIdPendingResponse{HTTPResponse: response(http.StatusServiceUnavailable), ApplicationproblemJSONDefault: &genclient.ErrorModel{}}, nil
+				case "nil_body":
+					return &genclient.GetV0CityByCityNameSessionByIdPendingResponse{HTTPResponse: response(http.StatusOK)}, nil
+				default:
+					return &genclient.GetV0CityByCityNameSessionByIdPendingResponse{HTTPResponse: response(http.StatusOK), JSON200: &genclient.SessionPendingResponse{Supported: false}}, nil
+				}
+			}}
+			_, err := newFakeClient(t, typed, nil).Pending(context.Background(), "named")
+			return err
+		})
+	})
+
+	t.Run("submit", func(t *testing.T) {
+		runClientOperationMatrix(t, func(t *testing.T, mode string) error {
+			t.Helper()
+			typed := &fakeSupervisorAPI{submitFn: func(context.Context, string, string, *genclient.SubmitSessionParams, genclient.SubmitSessionJSONRequestBody) (*genclient.SubmitSessionResponse, error) {
+				switch mode {
+				case "transport":
+					return nil, errors.New("dial failed")
+				case "nil_response":
+					return nil, nil
+				case "non_success":
+					return &genclient.SubmitSessionResponse{HTTPResponse: response(http.StatusServiceUnavailable), ApplicationproblemJSONDefault: &genclient.ErrorModel{}}, nil
+				case "nil_body":
+					return &genclient.SubmitSessionResponse{HTTPResponse: response(http.StatusAccepted)}, nil
+				default:
+					return &genclient.SubmitSessionResponse{HTTPResponse: response(http.StatusAccepted), JSON202: &genclient.AsyncAcceptedBody{RequestId: "request-1", EventCursor: "41"}}, nil
+				}
+			}}
+			_, err := newFakeClient(t, typed, nil).Submit(context.Background(), "named", "hello", genclient.Default)
+			return err
+		})
+	})
+
+	t.Run("respond", func(t *testing.T) {
+		runClientOperationMatrix(t, func(t *testing.T, mode string) error {
+			t.Helper()
+			typed := &fakeSupervisorAPI{respondFn: func(context.Context, string, string, *genclient.RespondSessionParams, genclient.RespondSessionJSONRequestBody) (*genclient.RespondSessionResponse, error) {
+				switch mode {
+				case "transport":
+					return nil, errors.New("dial failed")
+				case "nil_response":
+					return nil, nil
+				case "non_success":
+					return &genclient.RespondSessionResponse{HTTPResponse: response(http.StatusServiceUnavailable), ApplicationproblemJSONDefault: &genclient.ErrorModel{}}, nil
+				case "nil_body":
+					return &genclient.RespondSessionResponse{HTTPResponse: response(http.StatusAccepted)}, nil
+				default:
+					return &genclient.RespondSessionResponse{HTTPResponse: response(http.StatusAccepted), JSON202: &genclient.SessionRespondOutputBody{Id: "session-1"}}, nil
+				}
+			}}
+			_, err := newFakeClient(t, typed, nil).Respond(context.Background(), "named", ResponseInput{RequestID: "pending-1", Action: "allow"})
+			return err
+		})
+	})
+}
+
 func TestClientStatusUsesLiteAndPreservesNamedSessionDetails(t *testing.T) {
 	typed := &fakeSupervisorAPI{}
 	typed.statusFn = func(_ context.Context, city string, params *genclient.GetV0CityByCityNameStatusParams) (*genclient.GetV0CityByCityNameStatusResponse, error) {
@@ -173,6 +310,34 @@ func TestClientTranscriptConversationPaginationAndMalformedTimestamp(t *testing.
 	}
 }
 
+func TestClientTranscriptRejectsSemanticallyEmptyTurns(t *testing.T) {
+	tests := []struct {
+		name string
+		turn genclient.OutputTurn
+	}{
+		{name: "missing role", turn: genclient.OutputTurn{Text: "hello"}},
+		{name: "blank role", turn: genclient.OutputTurn{Role: "  ", Text: "hello"}},
+		{name: "missing text", turn: genclient.OutputTurn{Role: "assistant"}},
+		{name: "blank text", turn: genclient.OutputTurn{Role: "assistant", Text: "  \n"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			turns := []genclient.OutputTurn{tt.turn}
+			typed := &fakeSupervisorAPI{transcriptFn: func(context.Context, string, string, *genclient.GetV0CityByCityNameSessionByIdTranscriptParams) (*genclient.GetV0CityByCityNameSessionByIdTranscriptResponse, error) {
+				return &genclient.GetV0CityByCityNameSessionByIdTranscriptResponse{
+					HTTPResponse: response(http.StatusOK),
+					JSON200:      &genclient.SessionTranscriptGetResponse{Format: "conversation", Turns: &turns},
+				}, nil
+			}}
+
+			_, err := newFakeClient(t, typed, nil).Transcript(context.Background(), "pack/named.overseer", "")
+			var upstream *UpstreamError
+			require.ErrorAs(t, err, &upstream)
+			assert.Equal(t, "upstream_protocol", upstream.Code)
+		})
+	}
+}
+
 func TestClientPendingUsesPerSessionEndpoint(t *testing.T) {
 	typed := &fakeSupervisorAPI{pendingFn: func(_ context.Context, city, id string) (*genclient.GetV0CityByCityNameSessionByIdPendingResponse, error) {
 		assert.Equal(t, "city-one", city)
@@ -187,6 +352,34 @@ func TestClientPendingUsesPerSessionEndpoint(t *testing.T) {
 	require.NotNil(t, got.Pending)
 	assert.Equal(t, "request-1", got.Pending.RequestID)
 	assert.Equal(t, []string{"allow", "deny"}, got.Pending.Options)
+}
+
+func TestClientPendingRejectsSemanticallyEmptyInteraction(t *testing.T) {
+	tests := []struct {
+		name    string
+		pending genclient.PendingInteraction
+	}{
+		{name: "missing request id", pending: genclient.PendingInteraction{Kind: "question"}},
+		{name: "blank request id", pending: genclient.PendingInteraction{RequestId: "  ", Kind: "question"}},
+		{name: "missing kind", pending: genclient.PendingInteraction{RequestId: "request-1"}},
+		{name: "blank kind", pending: genclient.PendingInteraction{RequestId: "request-1", Kind: " \n "}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			typed := &fakeSupervisorAPI{pendingFn: func(context.Context, string, string) (*genclient.GetV0CityByCityNameSessionByIdPendingResponse, error) {
+				pending := tt.pending
+				return &genclient.GetV0CityByCityNameSessionByIdPendingResponse{
+					HTTPResponse: response(http.StatusOK),
+					JSON200:      &genclient.SessionPendingResponse{Supported: true, Pending: &pending},
+				}, nil
+			}}
+
+			_, err := newFakeClient(t, typed, nil).Pending(context.Background(), "pack/named.overseer")
+			var upstream *UpstreamError
+			require.ErrorAs(t, err, &upstream)
+			assert.Equal(t, "upstream_protocol", upstream.Code)
+		})
+	}
 }
 
 func TestClientSubmitUsesUniqueRequestTokensAndTypedIntent(t *testing.T) {

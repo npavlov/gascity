@@ -1,15 +1,15 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { ConvoysWorkspace } from "@/features/convoys/ConvoysWorkspace";
 import type { ConvoysWorkspaceCache, ConvoysWorkspaceHandle } from "@/features/convoys/ConvoysWorkspace";
 import { MayorWorkspace } from "@/features/mayor/MayorWorkspace";
 import { useMayor } from "@/features/mayor/useMayor";
-import type { MayorStreamConnector } from "@/features/mayor/useMayor";
+import type { MayorRefreshRequester, MayorStreamConnector } from "@/features/mayor/useMayor";
 import { OrdersWorkspace } from "@/features/orders/OrdersWorkspace";
 import type { OrdersWorkspaceCache, OrdersWorkspaceHandle } from "@/features/orders/OrdersWorkspace";
 import type { ControlCenterAPI, ConvoysAPI, Health, MayorAPI, OrdersAPI } from "@/lib/api";
 import { createInvalidationFeed, createRefreshQueue } from "@/lib/events";
-import type { EventSourceFactory, LiveResource } from "@/lib/events";
+import type { EventSourceFactory, LiveResource, RefreshQueue } from "@/lib/events";
 import {
   AlertIcon,
   CheckIcon,
@@ -66,6 +66,20 @@ export function App({ api, eventSourceFactory, mayorConnector, pollInterval = 10
   const [stale, setStale] = useState<Record<LiveResource, boolean>>({ convoys: false, orders: false });
   const convoyRef = useRef<ConvoysWorkspaceHandle>(null);
   const orderRef = useRef<OrdersWorkspaceHandle>(null);
+  const refreshDispatcher = useRef<(resources: string[], signal: AbortSignal) => Promise<void>>(async () => undefined);
+  const refreshQueueRef = useRef<RefreshQueue | null>(null);
+  const buildRefreshQueue = useCallback(
+    () => createRefreshQueue((resources, signal) => refreshDispatcher.current(resources, signal)),
+    [],
+  );
+  useEffect(() => {
+    if (refreshQueueRef.current === null) refreshQueueRef.current = buildRefreshQueue();
+    return () => {
+      const queue = refreshQueueRef.current;
+      refreshQueueRef.current = null;
+      queue?.dispose();
+    };
+  }, [buildRefreshQueue]);
   const [convoyCache, setConvoyCache] = useState<ConvoysWorkspaceCache>({ list: null, detail: null, items: [] });
   const [orderCache, setOrderCache] = useState<OrdersWorkspaceCache>({ list: null, history: null, items: [] });
   const activeTabRef = useRef(activeTab);
@@ -75,7 +89,18 @@ export function App({ api, eventSourceFactory, mayorConnector, pollInterval = 10
   const convoys = useMemo(() => convoyFacet(api), [api]);
   const orders = useMemo(() => orderFacet(api), [api]);
   const mayor = useMemo(() => mayorFacet(api), [api]);
-  const mayorController = useMayor({ api: mayor, visible: activeTab === "mayor", connector: mayorConnector, pollInterval });
+  const requestMayorRefresh = useCallback<MayorRefreshRequester>(async (resources) => {
+    const queue = refreshQueueRef.current;
+    if (!queue) return;
+    queue.request(resources);
+    await queue.idle();
+  }, []);
+  const requestRefresh = useCallback((resources: string[]) => {
+    refreshQueueRef.current?.request(resources);
+  }, []);
+  const mayorController = useMayor({ api: mayor, connector: mayorConnector, requestRefresh: requestMayorRefresh });
+  const refreshMayorSnapshots = mayorController.refreshSnapshots;
+  const refreshMayorStatus = mayorController.refreshStatus;
   const setConvoysConfirmed = useCallback((confirmed: boolean) => {
     setStale((current) => ({ ...current, convoys: !confirmed }));
   }, []);
@@ -109,7 +134,9 @@ export function App({ api, eventSourceFactory, mayorConnector, pollInterval = 10
   }, [api]);
 
   const refreshResources = useCallback(async (resources: string[], signal: AbortSignal) => {
-    const results = await Promise.all(resources.map(async (resource) => {
+    const requested = new Set(resources);
+    const cityResources = resources.filter((resource) => resource === "convoys" || resource === "orders");
+    const results = await Promise.all(cityResources.map(async (resource) => {
       if (resource === "convoys") {
         return { resource, confirmed: convoyRef.current ? await convoyRef.current.refresh(signal) : false };
       }
@@ -118,6 +145,11 @@ export function App({ api, eventSourceFactory, mayorConnector, pollInterval = 10
       }
       return { resource, confirmed: true };
     }));
+    if (requested.has("mayor-snapshots")) {
+      await refreshMayorSnapshots(signal);
+    } else if (requested.has("mayor-status")) {
+      await refreshMayorStatus(signal);
+    }
     if (signal.aborted) return;
     setStale((current) => {
       const next = { ...current };
@@ -126,12 +158,15 @@ export function App({ api, eventSourceFactory, mayorConnector, pollInterval = 10
       });
       return next;
     });
-  }, []);
+  }, [refreshMayorSnapshots, refreshMayorStatus]);
+
+  useLayoutEffect(() => {
+    refreshDispatcher.current = refreshResources;
+  }, [refreshResources]);
 
   useEffect(() => {
-    if (state.kind !== "ready" || (!convoys && !orders)) return;
-    const queue = createRefreshQueue(refreshResources);
-    const stopFeed = eventSourceFactory || typeof EventSource !== "undefined"
+    if (state.kind !== "ready" || (!convoys && !orders && !mayor)) return;
+    const stopFeed = (convoys || orders) && (eventSourceFactory || typeof EventSource !== "undefined")
       ? createInvalidationFeed({
           factory: eventSourceFactory,
           onInvalidate: (resources) => {
@@ -140,18 +175,20 @@ export function App({ api, eventSourceFactory, mayorConnector, pollInterval = 10
               resources.forEach((resource) => { next[resource] = true; });
               return next;
             });
-            queue.request(resources);
+            requestRefresh(resources);
           },
           onReconnect: () => {
             const active = activeTabRef.current;
-            if (active === "convoys" || active === "orders") queue.request([active]);
+            if (active === "convoys" || active === "orders") requestRefresh([active]);
           },
           onStale: () => setStale({ convoys: true, orders: true }),
         })
       : () => undefined;
     const refreshVisible = () => {
       const active = activeTabRef.current;
-      if (document.visibilityState === "visible" && (active === "convoys" || active === "orders")) queue.request([active]);
+      if (document.visibilityState !== "visible") return;
+      if (active === "convoys" || active === "orders") requestRefresh([active]);
+      if (active === "mayor") requestRefresh(["mayor-status"]);
     };
     const interval = window.setInterval(refreshVisible, pollInterval);
     window.addEventListener("focus", refreshVisible);
@@ -164,9 +201,8 @@ export function App({ api, eventSourceFactory, mayorConnector, pollInterval = 10
       window.removeEventListener("focus", refreshVisible);
       document.removeEventListener("visibilitychange", onVisibility);
       stopFeed();
-      queue.dispose();
     };
-  }, [convoys, eventSourceFactory, orders, pollInterval, refreshResources, state.kind]);
+  }, [convoys, eventSourceFactory, mayor, orders, pollInterval, requestRefresh, state.kind]);
 
   if (state.kind === "loading") {
     return (

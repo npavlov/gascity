@@ -20,11 +20,13 @@ export interface MayorStreamCallbacks {
 
 export type MayorStreamConnector = (callbacks: MayorStreamCallbacks) => () => void;
 
+export type MayorRefreshResource = "mayor-status" | "mayor-snapshots";
+export type MayorRefreshRequester = (resources: MayorRefreshResource[]) => Promise<void>;
+
 export interface UseMayorOptions {
   api: MayorAPI | null;
-  visible: boolean;
   connector?: MayorStreamConnector;
-  pollInterval?: number;
+  requestRefresh?: MayorRefreshRequester;
 }
 
 export interface MayorController {
@@ -45,6 +47,8 @@ export interface MayorController {
   scrollOffset: number;
   setScrollOffset(value: number): void;
   refresh(): Promise<void>;
+  refreshStatus(signal?: AbortSignal): Promise<boolean>;
+  refreshSnapshots(signal?: AbortSignal): Promise<boolean>;
   loadOlder(): Promise<void>;
   send(): Promise<void>;
   respond(action: string): Promise<void>;
@@ -125,7 +129,11 @@ export const connectMayorEvents: MayorStreamConnector = (callbacks) => {
   };
 };
 
-export function useMayor({ api, visible, connector = connectMayorEvents, pollInterval = 10_000 }: UseMayorOptions): MayorController {
+interface LiveTurnRecord {
+  turn: TranscriptTurn;
+}
+
+export function useMayor({ api, connector = connectMayorEvents, requestRefresh }: UseMayorOptions): MayorController {
   const [view, setView] = useState<MayorView | null>(null);
   const [transcript, setTranscript] = useState<TranscriptPage | null>(null);
   const [turns, setTurns] = useState<TranscriptTurn[]>([]);
@@ -145,96 +153,110 @@ export function useMayor({ api, visible, connector = connectMayorEvents, pollInt
   const [scrollOffset, setScrollOffset] = useState(0);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const activeControllers = useRef(new Set<AbortController>());
-  const pollController = useRef<AbortController | null>(null);
-  const fullRefreshActive = useRef<Promise<boolean> | null>(null);
-  const fullRefreshTrailing = useRef(false);
+  const lifecycleGeneration = useRef(0);
   const hasLastGood = useRef(false);
   const liveViewRevision = useRef(0);
   const viewRequestSerial = useRef(0);
+  const transcriptRequestSerial = useRef(0);
   const streamRevision = useRef(0);
+  const snapshotDemandRevision = useRef(0);
+  const lastSnapshotConfirmedRevision = useRef(-1);
+  const unconfirmedLiveTurns = useRef<LiveTurnRecord[]>([]);
+  const loadedOlderTurns = useRef<TranscriptTurn[]>([]);
+  const authoritativeTurnCounts = useRef<Map<string, number> | null>(null);
   const pendingRequestID = useRef<string | null>(null);
   const mutationActive = useRef(false);
 
-  const performFullRefresh = useCallback(async (): Promise<boolean> => {
+  const refreshSnapshots = useCallback(async (signal?: AbortSignal): Promise<boolean> => {
     if (!api) {
       setLoading(false);
       return false;
     }
-    const controller = new AbortController();
+    const ownedController = signal ? null : new AbortController();
+    const requestSignal = signal ?? ownedController!.signal;
+    const generation = lifecycleGeneration.current;
+    const demandRevision = snapshotDemandRevision.current;
     const startedAtRevision = liveViewRevision.current;
     const requestSerial = ++viewRequestSerial.current;
-    activeControllers.current.add(controller);
+    const transcriptSerial = ++transcriptRequestSerial.current;
+    if (ownedController) activeControllers.current.add(ownedController);
     try {
-      const [nextView, nextTranscript] = await Promise.all([
-        api.getMayor(controller.signal),
-        api.getMayorTranscript(undefined, controller.signal),
-      ]);
-      if (controller.signal.aborted) return false;
-      const normalizedView = normalizeView(nextView);
-      const normalizedTranscript = normalizeTranscript(nextTranscript);
-      if (requestSerial === viewRequestSerial.current) {
-        setView((current) => preserveLiveView(normalizedView, current, startedAtRevision === liveViewRevision.current));
-        hasLastGood.current = true;
-        setStatusError(null);
-        setFailureState(null);
-        setStatusStale(false);
-        setLoading(false);
+      const settleView = async (): Promise<boolean> => {
+        try {
+          const normalizedView = normalizeView(await api.getMayor(requestSignal));
+          if (requestSignal.aborted || generation !== lifecycleGeneration.current || requestSerial !== viewRequestSerial.current) return false;
+          setView((current) => preserveLiveView(normalizedView, current, startedAtRevision === liveViewRevision.current));
+          hasLastGood.current = true;
+          setStatusError(null);
+          setFailureState(null);
+          setStatusStale(false);
+          setLoading(false);
+          return true;
+        } catch (cause) {
+          if (requestSignal.aborted || generation !== lifecycleGeneration.current || requestSerial !== viewRequestSerial.current) return false;
+          setStatusError(errorMessage(cause));
+          setStatusStale(true);
+          if (!hasLastGood.current) setFailureState(classifyFailure(cause));
+          setLoading(false);
+          return false;
+        }
+      };
+
+      const settleTranscript = async (): Promise<boolean> => {
+        try {
+          const normalizedTranscript = normalizeTranscript(await api.getMayorTranscript(undefined, requestSignal));
+          if (requestSignal.aborted || generation !== lifecycleGeneration.current || transcriptSerial !== transcriptRequestSerial.current) return false;
+          const reconciliation = reconcileLiveTurns(
+            normalizedTranscript.turns ?? [],
+            unconfirmedLiveTurns.current,
+            authoritativeTurnCounts.current,
+          );
+          unconfirmedLiveTurns.current = reconciliation.remaining;
+          authoritativeTurnCounts.current = reconciliation.snapshotCounts;
+          setTranscript(normalizedTranscript);
+          setTurns([...loadedOlderTurns.current, ...reconciliation.turns]);
+          setSnapshotError(null);
+          return true;
+        } catch (cause) {
+          if (requestSignal.aborted || generation !== lifecycleGeneration.current || transcriptSerial !== transcriptRequestSerial.current) return false;
+          setSnapshotError(errorMessage(cause));
+          return false;
+        }
+      };
+
+      const viewLane = settleView();
+      const transcriptLane = settleTranscript();
+      const [viewConfirmed, transcriptConfirmed] = await Promise.all([viewLane, transcriptLane]);
+      if (requestSignal.aborted || generation !== lifecycleGeneration.current) return false;
+      if (requestSerial !== viewRequestSerial.current || transcriptSerial !== transcriptRequestSerial.current) return false;
+
+      const confirmed = viewConfirmed && transcriptConfirmed;
+      if (confirmed) {
+        lastSnapshotConfirmedRevision.current = Math.max(lastSnapshotConfirmedRevision.current, demandRevision);
+        if (demandRevision === snapshotDemandRevision.current) setSnapshotStale(false);
+      } else {
+        setSnapshotStale(true);
       }
-      setTranscript(normalizedTranscript);
-      setTurns((current) => mergeTurns(normalizedTranscript.turns ?? [], current));
-      setSnapshotError(null);
-      if (!fullRefreshTrailing.current) setSnapshotStale(false);
-      return true;
-    } catch (cause) {
-      if (controller.signal.aborted) return false;
-      const detail = errorMessage(cause);
-      setSnapshotError(detail);
-      setSnapshotStale(true);
-      if (requestSerial === viewRequestSerial.current) {
-        if (!hasLastGood.current) setFailureState(classifyFailure(cause));
-        setLoading(false);
-      }
-      return false;
+      return confirmed;
     } finally {
-      activeControllers.current.delete(controller);
+      if (ownedController) activeControllers.current.delete(ownedController);
     }
   }, [api]);
 
-  const refreshSnapshots = useCallback((): Promise<boolean> => {
-    if (fullRefreshActive.current) {
-      fullRefreshTrailing.current = true;
-      return fullRefreshActive.current;
-    }
-    const run = (async () => {
-      let confirmed = false;
-      do {
-        fullRefreshTrailing.current = false;
-        confirmed = await performFullRefresh();
-      } while (fullRefreshTrailing.current);
-      return confirmed;
-    })();
-    fullRefreshActive.current = run;
-    void run.then(
-      () => { if (fullRefreshActive.current === run) fullRefreshActive.current = null; },
-      () => { if (fullRefreshActive.current === run) fullRefreshActive.current = null; },
-    );
-    return run;
-  }, [performFullRefresh]);
-
-  const refreshView = useCallback(async (): Promise<boolean> => {
+  const refreshStatus = useCallback(async (signal?: AbortSignal): Promise<boolean> => {
     if (!api) {
       setLoading(false);
       return false;
     }
-    pollController.current?.abort();
-    const controller = new AbortController();
+    const ownedController = signal ? null : new AbortController();
+    const requestSignal = signal ?? ownedController!.signal;
+    const generation = lifecycleGeneration.current;
     const startedAtRevision = liveViewRevision.current;
     const requestSerial = ++viewRequestSerial.current;
-    pollController.current = controller;
-    activeControllers.current.add(controller);
+    if (ownedController) activeControllers.current.add(ownedController);
     try {
-      const nextView = normalizeView(await api.getMayor(controller.signal));
-      if (controller.signal.aborted) return false;
+      const nextView = normalizeView(await api.getMayor(requestSignal));
+      if (requestSignal.aborted || generation !== lifecycleGeneration.current) return false;
       if (requestSerial === viewRequestSerial.current) {
         setView((current) => preserveLiveView(nextView, current, startedAtRevision === liveViewRevision.current));
         hasLastGood.current = true;
@@ -245,7 +267,7 @@ export function useMayor({ api, visible, connector = connectMayorEvents, pollInt
       }
       return true;
     } catch (cause) {
-      if (controller.signal.aborted) return false;
+      if (requestSignal.aborted || generation !== lifecycleGeneration.current) return false;
       if (requestSerial === viewRequestSerial.current) {
         setStatusError(errorMessage(cause));
         setStatusStale(true);
@@ -254,21 +276,35 @@ export function useMayor({ api, visible, connector = connectMayorEvents, pollInt
       }
       return false;
     } finally {
-      activeControllers.current.delete(controller);
-      if (pollController.current === controller) pollController.current = null;
+      if (ownedController) activeControllers.current.delete(ownedController);
     }
   }, [api]);
 
-  const refresh = useCallback(async () => { await refreshSnapshots(); }, [refreshSnapshots]);
+  const requestSnapshotRefresh = useCallback(async (): Promise<boolean> => {
+    const demandRevision = ++snapshotDemandRevision.current;
+    if (requestRefresh) {
+      await requestRefresh(["mayor-snapshots"]);
+    } else {
+      await refreshSnapshots();
+    }
+    return lastSnapshotConfirmedRevision.current >= demandRevision;
+  }, [refreshSnapshots, requestRefresh]);
+
+  const refresh = useCallback(async () => { await requestSnapshotRefresh(); }, [requestSnapshotRefresh]);
 
   useEffect(() => {
     let active = true;
     const controllers = activeControllers.current;
+    const generation = ++lifecycleGeneration.current;
+    loadedOlderTurns.current = [];
+    unconfirmedLiveTurns.current = [];
+    authoritativeTurnCounts.current = null;
     queueMicrotask(() => {
-      if (active) void refreshSnapshots();
+      if (active && generation === lifecycleGeneration.current) void refreshSnapshots();
     });
     return () => {
       active = false;
+      lifecycleGeneration.current += 1;
       controllers.forEach((controller) => controller.abort());
       controllers.clear();
     };
@@ -292,7 +328,8 @@ export function useMayor({ api, visible, connector = connectMayorEvents, pollInt
       return;
     }
     if (event.kind === "turn" && event.turn) {
-      setTurns((current) => mergeTurns(current, [event.turn!]));
+      unconfirmedLiveTurns.current.push({ turn: event.turn });
+      setTurns((current) => [...current, event.turn!]);
       setLiveTurn(event.turn);
       return;
     }
@@ -308,9 +345,12 @@ export function useMayor({ api, visible, connector = connectMayorEvents, pollInt
     }
     if (event.kind === "invalidate") {
       setSnapshotStale(true);
-      void refreshSnapshots();
+      const startedAtRevision = streamRevision.current;
+      void requestSnapshotRefresh().then((confirmed) => {
+        if (confirmed && startedAtRevision === streamRevision.current) setStreamStale(false);
+      });
     }
-  }, [markStreamStale, refreshSnapshots]);
+  }, [markStreamStale, requestSnapshotRefresh]);
 
   useEffect(() => {
     if (!api) return;
@@ -319,43 +359,28 @@ export function useMayor({ api, visible, connector = connectMayorEvents, pollInt
       onStale: markStreamStale,
       onReconnect: async () => {
         const startedAtRevision = streamRevision.current;
-        const confirmed = await refreshSnapshots();
+        const confirmed = await requestSnapshotRefresh();
         if (confirmed && startedAtRevision === streamRevision.current) setStreamStale(false);
       },
     });
-  }, [api, connector, markStreamStale, onEvent, refreshSnapshots]);
-
-  useEffect(() => {
-    if (!api || !visible) return;
-    const poll = () => {
-      if (document.visibilityState === "visible") void refreshView();
-    };
-    const interval = window.setInterval(poll, pollInterval);
-    const onFocus = () => poll();
-    const onVisibility = () => {
-      if (document.visibilityState === "visible") poll();
-    };
-    window.addEventListener("focus", onFocus);
-    document.addEventListener("visibilitychange", onVisibility);
-    return () => {
-      window.clearInterval(interval);
-      window.removeEventListener("focus", onFocus);
-      document.removeEventListener("visibilitychange", onVisibility);
-      pollController.current?.abort();
-    };
-  }, [api, pollInterval, refreshView, visible]);
+  }, [api, connector, markStreamStale, onEvent, requestSnapshotRefresh]);
 
   const loadOlder = useCallback(async () => {
     if (!api || loadingOlder || !transcript?.has_older || !transcript.before) return;
     setLoadingOlder(true);
+    const generation = lifecycleGeneration.current;
     try {
       const older = normalizeTranscript(await api.getMayorTranscript(transcript.before));
-      setTurns((current) => mergeTurns(older.turns ?? [], current));
+      if (generation !== lifecycleGeneration.current) return;
+      const olderTurns = older.turns ?? [];
+      loadedOlderTurns.current = [...olderTurns, ...loadedOlderTurns.current];
+      setTurns((current) => [...olderTurns, ...current]);
       setTranscript((current) => current ? { ...current, has_older: older.has_older, before: older.before, total: Math.max(current.total, older.total), problems: [...(older.problems ?? []), ...(current.problems ?? [])] } : older);
     } catch (cause) {
+      if (generation !== lifecycleGeneration.current) return;
       setMutationError(errorMessage(cause));
     } finally {
-      setLoadingOlder(false);
+      if (generation === lifecycleGeneration.current) setLoadingOlder(false);
     }
   }, [api, loadingOlder, transcript]);
 
@@ -369,14 +394,14 @@ export function useMayor({ api, visible, connector = connectMayorEvents, pollInt
       const nextReceipt = await api.sendMayorMessage(composerDraft);
       setReceipt(nextReceipt);
       setComposerDraft("");
-      await refreshSnapshots();
+      await requestSnapshotRefresh();
     } catch (cause) {
       setMutationError(errorMessage(cause));
     } finally {
       mutationActive.current = false;
       setMutation(null);
     }
-  }, [api, composerDraft, refreshSnapshots, view]);
+  }, [api, composerDraft, requestSnapshotRefresh, view]);
 
   const respond = useCallback(async (action: string) => {
     const pending = view?.pending;
@@ -387,14 +412,14 @@ export function useMayor({ api, visible, connector = connectMayorEvents, pollInt
     try {
       await api.respondMayorInteraction(pending.request_id, action, pendingDraft || undefined, pending.metadata ?? undefined);
       setPendingDraft("");
-      await refreshSnapshots();
+      await requestSnapshotRefresh();
     } catch (cause) {
       setMutationError(errorMessage(cause));
     } finally {
       mutationActive.current = false;
       setMutation(null);
     }
-  }, [api, pendingDraft, refreshSnapshots, view?.pending]);
+  }, [api, pendingDraft, requestSnapshotRefresh, view?.pending]);
 
   const canSend = useMemo(() => canSendMayor(view, composerDraft) && mutation === null, [composerDraft, mutation, view]);
   const error = statusError ?? snapshotError;
@@ -402,7 +427,7 @@ export function useMayor({ api, visible, connector = connectMayorEvents, pollInt
   return {
     view, turns, loading, stale: streamStale || snapshotStale || statusStale || Boolean(view?.stale), error, failureState, liveTurn,
     composerDraft, setComposerDraft, pendingDraft, setPendingDraft, receipt, mutation, mutationError,
-    scrollOffset, setScrollOffset, refresh, loadOlder, send, respond, canSend,
+    scrollOffset, setScrollOffset, refresh, refreshStatus, refreshSnapshots, loadOlder, send, respond, canSend,
     hasOlder: Boolean(transcript?.has_older), loadingOlder,
   };
 }
@@ -432,14 +457,35 @@ function isMayorEvent(value: unknown): value is MayorEvent {
     && (event.resources === null || (Array.isArray(event.resources) && event.resources.every((resource) => typeof resource === "string")));
 }
 
-function mergeTurns(first: TranscriptTurn[], second: TranscriptTurn[]): TranscriptTurn[] {
-  const seen = new Set<string>();
-  return [...first, ...second].filter((turn) => {
-    const key = `${turn.role}\u0000${turn.timestamp ?? ""}\u0000${turn.text}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
+function reconcileLiveTurns(
+  snapshot: TranscriptTurn[],
+  buffered: LiveTurnRecord[],
+  previousSnapshotCounts: Map<string, number> | null,
+): { turns: TranscriptTurn[]; remaining: LiveTurnRecord[]; snapshotCounts: Map<string, number> } {
+  const snapshotCounts = new Map<string, number>();
+  snapshot.forEach((turn) => {
+    const key = turnKey(turn);
+    snapshotCounts.set(key, (snapshotCounts.get(key) ?? 0) + 1);
   });
+  const confirmations = new Map<string, number>();
+  if (previousSnapshotCounts !== null) {
+    snapshotCounts.forEach((count, key) => {
+      const growth = count - (previousSnapshotCounts.get(key) ?? 0);
+      if (growth > 0) confirmations.set(key, growth);
+    });
+  }
+  const remaining = buffered.filter(({ turn }) => {
+    const key = turnKey(turn);
+    const count = confirmations.get(key) ?? 0;
+    if (count === 0) return true;
+    confirmations.set(key, count - 1);
+    return false;
+  });
+  return { turns: [...snapshot, ...remaining.map(({ turn }) => turn)], remaining, snapshotCounts };
+}
+
+function turnKey(turn: TranscriptTurn): string {
+  return JSON.stringify([turn.role, turn.timestamp ?? null, turn.text]);
 }
 
 function classifyFailure(error: unknown): MayorFailureState {
