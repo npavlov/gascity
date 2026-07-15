@@ -660,6 +660,26 @@ func TestBuildStatusBodyLiteOmitsExpensiveBlocks(t *testing.T) {
 	}
 }
 
+// TestBuildStatusBodyLiteKeepsNamedSessionDetails is the Control Center Mayor
+// contract: low-cost polling may omit expensive counts, but exact configured
+// named-session discovery must remain available without materializing it.
+func TestBuildStatusBodyLiteKeepsNamedSessionDetails(t *testing.T) {
+	state := seedStatusBodyState(t)
+	s := &Server{state: state}
+
+	body := s.buildStatusBody(context.Background(), true)
+	if len(body.NamedSessionDetails) != 1 {
+		t.Fatalf("lite body NamedSessionDetails = %#v, want one configured identity", body.NamedSessionDetails)
+	}
+	detail := body.NamedSessionDetails[0]
+	if detail.Identity != "myrig/worker" {
+		t.Fatalf("lite named-session identity = %q, want %q", detail.Identity, "myrig/worker")
+	}
+	if detail.Status == "" {
+		t.Fatal("lite named-session status is empty")
+	}
+}
+
 // TestHandleStatusLiteSkipsWorkScanAndCachesSeparately drives both variants
 // through the HTTP handler: ?lite=true must skip the rig-store work scan, and
 // the lite and full bodies must cache under distinct keys (a lite request must

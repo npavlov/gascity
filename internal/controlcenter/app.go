@@ -15,6 +15,7 @@ import (
 
 	controlapi "github.com/gastownhall/gascity/internal/controlcenter/api"
 	"github.com/gastownhall/gascity/internal/controlcenter/gcstate"
+	"github.com/gastownhall/gascity/internal/controlcenter/mayor"
 )
 
 const shutdownTimeout = 5 * time.Second
@@ -28,9 +29,11 @@ type Dependencies struct {
 // SupervisorBundle is the one city-scoped Supervisor dependency graph shared
 // by health, authoritative reads, and the event hub.
 type SupervisorBundle struct {
-	Ping   func(context.Context) error
-	State  *gcstate.Service
-	Events *gcstate.Hub
+	Ping        func(context.Context) error
+	State       *gcstate.Service
+	Events      *gcstate.Hub
+	Mayor       *mayor.Service
+	MayorEvents *mayor.Hub
 }
 
 // SupervisorFactory constructs all Supervisor edges from one normalized
@@ -39,10 +42,11 @@ type SupervisorFactory func(supervisorURL, cityName string) (SupervisorBundle, e
 
 // App is one configured Control Center HTTP application.
 type App struct {
-	cfg     Config
-	handler http.Handler
-	events  *gcstate.Hub
-	serve   func(*http.Server, net.Listener) error
+	cfg         Config
+	handler     http.Handler
+	events      *gcstate.Hub
+	mayorEvents *mayor.Hub
+	serve       func(*http.Server, net.Listener) error
 }
 
 type problemBody struct {
@@ -65,7 +69,7 @@ func NewApp(cfg Config, deps Dependencies) (*App, error) {
 	if err != nil {
 		return nil, fmt.Errorf("control center: create Supervisor dependencies: %w", err)
 	}
-	if bundle.Ping == nil || bundle.State == nil || bundle.Events == nil {
+	if bundle.Ping == nil || bundle.State == nil || bundle.Events == nil || bundle.Mayor == nil || bundle.MayorEvents == nil {
 		return nil, fmt.Errorf("control center: incomplete Supervisor dependency bundle")
 	}
 	staticHandler, err := newStaticHandler(deps.StaticFS)
@@ -79,14 +83,17 @@ func NewApp(cfg Config, deps Dependencies) (*App, error) {
 		SupervisorPing: bundle.Ping,
 		State:          bundle.State,
 		Events:         bundle.Events,
+		Mayor:          bundle.Mayor,
+		MayorEvents:    bundle.MayorEvents,
 	})
 	mux.Handle("/", staticHandler)
 
 	return &App{
-		cfg:     normalized,
-		handler: hostGuard(mux),
-		events:  bundle.Events,
-		serve:   func(server *http.Server, listener net.Listener) error { return server.Serve(listener) },
+		cfg:         normalized,
+		handler:     hostGuard(mux),
+		events:      bundle.Events,
+		mayorEvents: bundle.MayorEvents,
+		serve:       func(server *http.Server, listener net.Listener) error { return server.Serve(listener) },
 	}, nil
 }
 
@@ -112,10 +119,16 @@ func (a *App) Run(ctx context.Context) error {
 		cancelRun()
 		return fmt.Errorf("control center: start event hub: %w", err)
 	}
+	if err := a.mayorEvents.Start(runCtx); err != nil {
+		cancelRun()
+		a.events.Stop()
+		return fmt.Errorf("control center: start Mayor event hub: %w", err)
+	}
 	var stopOnce sync.Once
 	stopHub := func() {
 		stopOnce.Do(func() {
 			cancelRun()
+			a.mayorEvents.Stop()
 			a.events.Stop()
 		})
 	}

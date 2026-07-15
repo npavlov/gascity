@@ -1,0 +1,114 @@
+.mayor-workspace {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--cc-space-4);
+  align-items: start;
+  width: 100%;
+}
+
+.mayor-workspace__loading,
+.mayor-workspace__failure {
+  width: 100%;
+}
+
+.mayor-workspace__status {
+  flex: var(--cc-flex-cockpit-nav-grow) 1 var(--cc-size-cockpit-nav-min);
+  min-width: min(100%, var(--cc-size-cockpit-nav-min));
+}
+
+.mayor-workspace__main {
+  display: grid;
+  flex: var(--cc-flex-cockpit-tool-grow) 1 var(--cc-size-cockpit-tool-min);
+  min-width: var(--cc-space-0);
+  gap: var(--cc-space-4);
+}
+
+.mayor-workspace__status-row,
+.mayor-workspace__facts,
+.mayor-composer__actions,
+.mayor-workspace__pending-actions,
+.mayor-turn__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--cc-space-2);
+  align-items: center;
+  justify-content: space-between;
+}
+
+.mayor-workspace__facts {
+  justify-content: flex-start;
+}
+
+.mayor-workspace__notice,
+.mayor-workspace__problems,
+.mayor-workspace__error {
+  display: block;
+  padding: var(--cc-space-2) var(--cc-space-3);
+  border: var(--cc-size-border-default) solid var(--cc-color-border-subtle);
+  border-radius: var(--cc-radius-md);
+}
+
+.mayor-workspace__notice {
+  background: var(--cc-color-neutral-surface);
+}
+
+.mayor-workspace__problems,
+.mayor-workspace__error {
+  color: var(--cc-color-danger-foreground);
+  background: var(--cc-color-danger-surface);
+  border-color: var(--cc-color-danger-border);
+}
+
+.mayor-transcript {
+  display: grid;
+  max-height: 60vh;
+  overflow-y: auto;
+  gap: var(--cc-space-3);
+  padding: var(--cc-space-3);
+  background: var(--cc-color-neutral-surface);
+  border: var(--cc-size-border-default) solid var(--cc-color-border-subtle);
+  border-radius: var(--cc-radius-md);
+}
+
+.mayor-turn {
+  display: grid;
+  gap: var(--cc-space-2);
+  padding: var(--cc-space-3);
+  overflow-wrap: anywhere;
+  background: var(--cc-color-surface-panel);
+  border: var(--cc-size-border-default) solid var(--cc-color-border-subtle);
+  border-radius: var(--cc-radius-md);
+}
+
+.mayor-turn[data-role="user"] {
+  background: var(--cc-color-info-surface);
+  border-color: var(--cc-color-info-border);
+}
+
+.mayor-turn__text {
+  white-space: pre-wrap;
+}
+
+.mayor-live-announcer {
+  min-height: var(--cc-size-control-compact);
+  padding: var(--cc-space-1) var(--cc-space-2);
+  color: var(--cc-color-text-muted);
+}
+
+.mayor-composer {
+  display: grid;
+  gap: var(--cc-space-3);
+}
+
+.mayor-composer .cc-textarea,
+.mayor-workspace__pending .cc-textarea {
+  width: 100%;
+}
+
+.mayor-composer__actions {
+  align-items: start;
+}
+
+.mayor-workspace__pending-actions {
+  justify-content: flex-start;
+}

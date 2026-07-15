@@ -100,7 +100,7 @@ func TestSupervisorPingRequiresTypedSuccessResponse(t *testing.T) {
 			}))
 			defer server.Close()
 
-			bundle, err := newSupervisorBundle(server.URL, "taxdome", server.Client())
+			bundle, err := newSupervisorBundle(server.URL, "taxdome", "taxdome/lead.operator", server.Client())
 			if err != nil {
 				t.Fatalf("newSupervisorBundle: %v", err)
 			}
@@ -148,7 +148,7 @@ func TestSupervisorBundleBoundsOrdinaryHealthAndStateReads(t *testing.T) {
 		deadlines = append(deadlines, time.Until(deadline))
 		return jsonResponse(request, `{}`), nil
 	})}
-	bundle, err := newSupervisorBundle("http://supervisor.test", "taxdome", client)
+	bundle, err := newSupervisorBundle("http://supervisor.test", "taxdome", "taxdome/lead.operator", client)
 	if err != nil {
 		t.Fatalf("newSupervisorBundle: %v", err)
 	}
@@ -246,7 +246,7 @@ func TestRunBuildsSupervisorPingFromNormalizedURL(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	var gotURL string
+	var gotURL, gotMayorIdentity string
 	err := runWithDependencies(ctx, []string{
 		"--bind", "127.0.0.1:0",
 		"--supervisor-url", "  http://127.0.0.1:9011/  ",
@@ -261,9 +261,10 @@ func TestRunBuildsSupervisorPingFromNormalizedURL(t *testing.T) {
 				"index.html": &fstest.MapFile{Data: []byte("<!doctype html><main id=\"root\"></main>")},
 			}, nil
 		},
-		newSupervisor: func(baseURL, cityName string, _ *http.Client) (controlcenter.SupervisorBundle, error) {
+		newSupervisor: func(baseURL, cityName, mayorIdentity string, _ *http.Client) (controlcenter.SupervisorBundle, error) {
 			gotURL = baseURL
-			return newSupervisorBundle(baseURL, cityName, &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			gotMayorIdentity = mayorIdentity
+			return newSupervisorBundle(baseURL, cityName, mayorIdentity, &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 				return nil, context.Canceled
 			})})
 		},
@@ -273,6 +274,9 @@ func TestRunBuildsSupervisorPingFromNormalizedURL(t *testing.T) {
 	}
 	if gotURL != "http://127.0.0.1:9011" {
 		t.Fatalf("Supervisor URL = %q, want normalized URL", gotURL)
+	}
+	if gotMayorIdentity != "taxdome/lead.operator" {
+		t.Fatalf("Mayor identity = %q, want exact configured identity", gotMayorIdentity)
 	}
 }
 
@@ -289,8 +293,8 @@ func TestRunWithDependenciesRejectsMissingRuntimeEdges(t *testing.T) {
 	validWebFS := func() (fs.FS, error) {
 		return fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte("<!doctype html>")}}, nil
 	}
-	validSupervisorFactory := func(baseURL, cityName string, _ *http.Client) (controlcenter.SupervisorBundle, error) {
-		return newSupervisorBundle(baseURL, cityName, &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+	validSupervisorFactory := func(baseURL, cityName, mayorIdentity string, _ *http.Client) (controlcenter.SupervisorBundle, error) {
+		return newSupervisorBundle(baseURL, cityName, mayorIdentity, &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 			return nil, context.Canceled
 		})})
 	}

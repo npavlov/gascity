@@ -16,13 +16,14 @@ import (
 	"github.com/gastownhall/gascity/internal/api/genclient"
 	"github.com/gastownhall/gascity/internal/controlcenter"
 	"github.com/gastownhall/gascity/internal/controlcenter/gcstate"
+	"github.com/gastownhall/gascity/internal/controlcenter/mayor"
 )
 
 const supervisorTimeout = 3 * time.Second
 
 type runDependencies struct {
 	webFS         func() (fs.FS, error)
-	newSupervisor func(string, string, *http.Client) (controlcenter.SupervisorBundle, error)
+	newSupervisor func(string, string, string, *http.Client) (controlcenter.SupervisorBundle, error)
 }
 
 func main() {
@@ -57,7 +58,7 @@ func runWithDependencies(ctx context.Context, args []string, deps runDependencie
 	app, err := controlcenter.NewApp(cfg, controlcenter.Dependencies{
 		StaticFS: web,
 		SupervisorFactory: func(baseURL, cityName string) (controlcenter.SupervisorBundle, error) {
-			return deps.newSupervisor(baseURL, cityName, nil)
+			return deps.newSupervisor(baseURL, cityName, cfg.MayorIdentity, nil)
 		},
 	})
 	if err != nil {
@@ -98,7 +99,7 @@ func newSupervisorClient(baseURL string, client *http.Client) (*genclient.Client
 	return typedClient, nil
 }
 
-func newSupervisorBundle(baseURL, cityName string, client *http.Client) (controlcenter.SupervisorBundle, error) {
+func newSupervisorBundle(baseURL, cityName, mayorIdentity string, client *http.Client) (controlcenter.SupervisorBundle, error) {
 	typedClient, err := newSupervisorClient(baseURL, client)
 	if err != nil {
 		return controlcenter.SupervisorBundle{}, err
@@ -115,6 +116,18 @@ func newSupervisorBundle(baseURL, cityName string, client *http.Client) (control
 	if err != nil {
 		return controlcenter.SupervisorBundle{}, fmt.Errorf("control center: create Supervisor event hub: %w", err)
 	}
+	mayorClient, err := mayor.NewClient(cityName, typedClient, typedClient.ClientInterface)
+	if err != nil {
+		return controlcenter.SupervisorBundle{}, fmt.Errorf("control center: create Supervisor Mayor client: %w", err)
+	}
+	mayorService, err := mayor.NewService(mayorIdentity, mayorClient, mayorClient)
+	if err != nil {
+		return controlcenter.SupervisorBundle{}, fmt.Errorf("control center: create Mayor service: %w", err)
+	}
+	mayorEvents, err := mayor.NewHub(mayorService, mayorClient)
+	if err != nil {
+		return controlcenter.SupervisorBundle{}, fmt.Errorf("control center: create Mayor event hub: %w", err)
+	}
 	ping := func(ctx context.Context) error {
 		callCtx, cancel := context.WithTimeout(ctx, supervisorTimeout)
 		defer cancel()
@@ -127,5 +140,5 @@ func newSupervisorBundle(baseURL, cityName string, client *http.Client) (control
 		}
 		return nil
 	}
-	return controlcenter.SupervisorBundle{Ping: ping, State: state, Events: events}, nil
+	return controlcenter.SupervisorBundle{Ping: ping, State: state, Events: events, Mayor: mayorService, MayorEvents: mayorEvents}, nil
 }

@@ -2,9 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { ConvoysWorkspace } from "@/features/convoys/ConvoysWorkspace";
 import type { ConvoysWorkspaceCache, ConvoysWorkspaceHandle } from "@/features/convoys/ConvoysWorkspace";
+import { MayorWorkspace } from "@/features/mayor/MayorWorkspace";
+import { useMayor } from "@/features/mayor/useMayor";
+import type { MayorStreamConnector } from "@/features/mayor/useMayor";
 import { OrdersWorkspace } from "@/features/orders/OrdersWorkspace";
 import type { OrdersWorkspaceCache, OrdersWorkspaceHandle } from "@/features/orders/OrdersWorkspace";
-import type { ControlCenterAPI, ConvoysAPI, Health, OrdersAPI } from "@/lib/api";
+import type { ControlCenterAPI, ConvoysAPI, Health, MayorAPI, OrdersAPI } from "@/lib/api";
 import { createInvalidationFeed, createRefreshQueue } from "@/lib/events";
 import type { EventSourceFactory, LiveResource } from "@/lib/events";
 import {
@@ -19,15 +22,19 @@ import {
   Text,
   ToolFrame,
 } from "@/ui";
+import type { TabItem } from "@/ui";
 
 type AppState =
   | { kind: "loading" }
   | { kind: "ready"; health: Health }
   | { kind: "error" };
 
+type TopLevelTab = LiveResource | "mayor";
+
 export interface AppProps {
   api: ControlCenterAPI;
   eventSourceFactory?: EventSourceFactory;
+  mayorConnector?: MayorStreamConnector;
   pollInterval?: number;
 }
 
@@ -41,9 +48,19 @@ function orderFacet(api: ControlCenterAPI): OrdersAPI | null {
   return { listOrders: api.listOrders, listOrderHistory: api.listOrderHistory, getOrderRunOutput: api.getOrderRunOutput };
 }
 
-export function App({ api, eventSourceFactory, pollInterval = 10_000 }: AppProps) {
+function mayorFacet(api: ControlCenterAPI): MayorAPI | null {
+  if (!api.getMayor || !api.getMayorTranscript || !api.sendMayorMessage || !api.respondMayorInteraction) return null;
+  return {
+    getMayor: api.getMayor,
+    getMayorTranscript: api.getMayorTranscript,
+    sendMayorMessage: api.sendMayorMessage,
+    respondMayorInteraction: api.respondMayorInteraction,
+  };
+}
+
+export function App({ api, eventSourceFactory, mayorConnector, pollInterval = 10_000 }: AppProps) {
   const [state, setState] = useState<AppState>({ kind: "loading" });
-  const [activeTab, setActiveTab] = useState<LiveResource>("convoys");
+  const [activeTab, setActiveTab] = useState<TopLevelTab>("convoys");
   const [selectedConvoyID, setSelectedConvoyID] = useState<string | null>(null);
   const [selectedOrderName, setSelectedOrderName] = useState<string | null>(null);
   const [stale, setStale] = useState<Record<LiveResource, boolean>>({ convoys: false, orders: false });
@@ -57,6 +74,8 @@ export function App({ api, eventSourceFactory, pollInterval = 10_000 }: AppProps
   }, [activeTab]);
   const convoys = useMemo(() => convoyFacet(api), [api]);
   const orders = useMemo(() => orderFacet(api), [api]);
+  const mayor = useMemo(() => mayorFacet(api), [api]);
+  const mayorController = useMayor({ api: mayor, visible: activeTab === "mayor", connector: mayorConnector, pollInterval });
   const setConvoysConfirmed = useCallback((confirmed: boolean) => {
     setStale((current) => ({ ...current, convoys: !confirmed }));
   }, []);
@@ -123,12 +142,16 @@ export function App({ api, eventSourceFactory, pollInterval = 10_000 }: AppProps
             });
             queue.request(resources);
           },
-          onReconnect: () => queue.request([activeTabRef.current]),
+          onReconnect: () => {
+            const active = activeTabRef.current;
+            if (active === "convoys" || active === "orders") queue.request([active]);
+          },
           onStale: () => setStale({ convoys: true, orders: true }),
         })
       : () => undefined;
     const refreshVisible = () => {
-      if (document.visibilityState === "visible") queue.request([activeTabRef.current]);
+      const active = activeTabRef.current;
+      if (document.visibilityState === "visible" && (active === "convoys" || active === "orders")) queue.request([active]);
     };
     const interval = window.setInterval(refreshVisible, pollInterval);
     window.addEventListener("focus", refreshVisible);
@@ -164,7 +187,44 @@ export function App({ api, eventSourceFactory, pollInterval = 10_000 }: AppProps
   }
 
   const connected = state.health.supervisor_reachable;
-  const noLiveFacets = !convoys && !orders;
+  const noLiveFacets = !convoys && !orders && !mayor;
+  const tabItems: TabItem[] = [
+    {
+      id: "convoys",
+      label: "Convoys",
+      content: convoys ? (
+        <ConvoysWorkspace
+          ref={convoyRef}
+          api={convoys}
+          cache={convoyCache}
+          onListChange={updateConvoyList}
+          onDetailChange={updateConvoyDetail}
+          selectedID={selectedConvoyID}
+          onSelectedIDChange={setSelectedConvoyID}
+          onConfirmedChange={setConvoysConfirmed}
+          externallyStale={stale.convoys}
+        />
+      ) : <Panel title="Convoys"><EmptyState title="Convoy projections unavailable" /></Panel>,
+    },
+    {
+      id: "orders",
+      label: "Orders",
+      content: orders ? (
+        <OrdersWorkspace
+          ref={orderRef}
+          api={orders}
+          cache={orderCache}
+          onListChange={updateOrderList}
+          onHistoryChange={updateOrderHistory}
+          selectedName={selectedOrderName}
+          onSelectedNameChange={setSelectedOrderName}
+          onConfirmedChange={setOrdersConfirmed}
+          externallyStale={stale.orders}
+        />
+      ) : <Panel title="Orders"><EmptyState title="Order projections unavailable" /></Panel>,
+    },
+    ...(mayor ? [{ id: "mayor", label: "Mayor", content: <MayorWorkspace controller={mayorController} /> }] : []),
+  ];
   return (
     <ToolFrame
       header={
@@ -191,44 +251,9 @@ export function App({ api, eventSourceFactory, pollInterval = 10_000 }: AppProps
           aria-label="Control Center resources"
           value={activeTab}
           onValueChange={(value) => {
-            if (value === "convoys" || value === "orders") setActiveTab(value);
+            if (value === "convoys" || value === "orders" || value === "mayor") setActiveTab(value);
           }}
-          items={[
-            {
-              id: "convoys",
-              label: "Convoys",
-              content: convoys ? (
-                <ConvoysWorkspace
-                  ref={convoyRef}
-                  api={convoys}
-                  cache={convoyCache}
-                  onListChange={updateConvoyList}
-                  onDetailChange={updateConvoyDetail}
-                  selectedID={selectedConvoyID}
-                  onSelectedIDChange={setSelectedConvoyID}
-                  onConfirmedChange={setConvoysConfirmed}
-                  externallyStale={stale.convoys}
-                />
-              ) : <Panel title="Convoys"><EmptyState title="Convoy projections unavailable" /></Panel>,
-            },
-            {
-              id: "orders",
-              label: "Orders",
-              content: orders ? (
-                <OrdersWorkspace
-                  ref={orderRef}
-                  api={orders}
-                  cache={orderCache}
-                  onListChange={updateOrderList}
-                  onHistoryChange={updateOrderHistory}
-                  selectedName={selectedOrderName}
-                  onSelectedNameChange={setSelectedOrderName}
-                  onConfirmedChange={setOrdersConfirmed}
-                  externallyStale={stale.orders}
-                />
-              ) : <Panel title="Orders"><EmptyState title="Order projections unavailable" /></Panel>,
-            },
-          ]}
+          items={tabItems}
         />
       )}
     </ToolFrame>

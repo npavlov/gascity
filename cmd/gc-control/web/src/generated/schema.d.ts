@@ -92,6 +92,91 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/mayor": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get API v1 mayor */
+        get: operations["get-api-v1-mayor"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/mayor/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Stream configured Mayor workspace events */
+        get: operations["streamControlCenterMayorEvents"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/mayor/interactions/{request_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Post API v1 mayor interactions by request ID */
+        post: operations["post-api-v1-mayor-interactions-by-request-id"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/mayor/messages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Post API v1 mayor messages */
+        post: operations["post-api-v1-mayor-messages"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/mayor/transcript": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get API v1 mayor transcript */
+        get: operations["get-api-v1-mayor-transcript"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/orders": {
         parameters: {
             query?: never;
@@ -238,9 +323,66 @@ export interface components {
             /** @description Whether the Supervisor returned typed health */
             supervisor_reachable: boolean;
         };
+        InteractionReceipt: {
+            session_id: string;
+            status: string;
+        };
         Invalidation: {
             cursor: string;
             resources: string[] | null;
+        };
+        MayorEvent: {
+            activity?: string;
+            cursor?: string;
+            /** @enum {string} */
+            kind: "turn" | "activity" | "pending" | "invalidate" | "stale";
+            pending?: components["schemas"]["PendingInteraction"];
+            resources: string[] | null;
+            turn?: components["schemas"]["TranscriptTurn"];
+        };
+        MayorInteractionBody: {
+            action: string;
+            metadata?: {
+                [key: string]: string;
+            };
+            request_id: string;
+            text?: string;
+        };
+        MayorMessageBody: {
+            message: string;
+        };
+        MayorProblem: {
+            code: string;
+            detail: string;
+            retryable: boolean;
+            source: string;
+        };
+        MayorView: {
+            activity?: string;
+            attached: boolean;
+            degraded: boolean;
+            follow_up_supported: boolean;
+            identity: string;
+            lifecycle?: string;
+            materialized: boolean;
+            mode?: string;
+            model?: string;
+            pending?: components["schemas"]["PendingInteraction"];
+            problems: components["schemas"]["MayorProblem"][] | null;
+            provider?: string;
+            running: boolean;
+            session_id?: string;
+            session_name?: string;
+            stale: boolean;
+            /** @enum {string} */
+            state: "available_dormant" | "idle" | "in_turn" | "sleeping" | "stopped" | "unsupported" | "missing" | "ambiguous" | "disconnected";
+        };
+        MessageReceipt: {
+            /** @enum {string} */
+            intent: "default" | "follow_up";
+            queued: boolean;
+            request_id: string;
+            status: string;
         };
         OrderRunOutput: {
             bead_id: string;
@@ -272,6 +414,15 @@ export interface components {
             problems: components["schemas"]["Problem"][] | null;
             scoped_name: string;
             type: string;
+        };
+        PendingInteraction: {
+            kind: string;
+            metadata: {
+                [key: string]: string;
+            };
+            options: string[] | null;
+            prompt?: string;
+            request_id: string;
         };
         Problem: {
             /** @description Stable machine-readable problem code */
@@ -349,6 +500,24 @@ export interface components {
              * @enum {string}
              */
             tone: "neutral" | "info" | "success" | "warning" | "danger";
+        };
+        TranscriptPage: {
+            before?: string;
+            degraded: boolean;
+            has_older: boolean;
+            problems: components["schemas"]["MayorProblem"][] | null;
+            /** Format: int64 */
+            returned: number;
+            stale: boolean;
+            /** Format: int64 */
+            total: number;
+            turns: components["schemas"]["TranscriptTurn"][] | null;
+        };
+        TranscriptTurn: {
+            role: string;
+            text: string;
+            /** Format: date-time */
+            timestamp?: string;
         };
         WorkflowRef: {
             partial: boolean;
@@ -529,6 +698,178 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HealthBody"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "get-api-v1-mayor": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MayorView"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    streamControlCenterMayorEvents: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Server-sent Mayor events. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": {
+                        data: components["schemas"]["MayorEvent"];
+                        /** @constant */
+                        event: "mayor";
+                        id: string;
+                    }[];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "post-api-v1-mayor-interactions-by-request-id": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                request_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MayorInteractionBody"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InteractionReceipt"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "post-api-v1-mayor-messages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MayorMessageBody"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MessageReceipt"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "get-api-v1-mayor-transcript": {
+        parameters: {
+            query?: {
+                /** @description Exclusive older-page cursor. */
+                before?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TranscriptPage"];
                 };
             };
             /** @description Error */

@@ -11,12 +11,15 @@ import type {
   ConvoySummary,
   ConvoysAPI,
   Health,
+  MayorAPI,
+  MayorView,
   Order,
   OrderList,
   OrderRunList,
   OrderRunOutput,
 } from "@/lib/api";
 import type { EventSourceFactory, EventSourceLike } from "@/lib/events";
+import type { MayorStreamConnector } from "@/features/mayor/useMayor";
 
 afterEach(cleanup);
 
@@ -90,6 +93,45 @@ function fullAPI(overrides: Partial<ControlCenterAPI> = {}): ControlCenterAPI {
   };
 }
 
+const mayorView: MayorView = {
+  identity: "pack/named.overseer",
+  state: "idle",
+  lifecycle: "active",
+  session_id: "mayor-session",
+  session_name: "overseer",
+  materialized: true,
+  running: true,
+  attached: false,
+  follow_up_supported: true,
+  degraded: false,
+  stale: false,
+  problems: [],
+};
+
+function mayorMethods(overrides: Partial<MayorAPI> = {}): MayorAPI {
+  return {
+    getMayor: vi.fn(async () => mayorView),
+    getMayorTranscript: vi.fn(async () => ({
+      turns: [{ role: "assistant", text: "Mayor ready" }],
+      has_older: false,
+      returned: 1,
+      total: 1,
+      degraded: false,
+      stale: false,
+      problems: [],
+    })),
+    sendMayorMessage: vi.fn(async () => ({ request_id: "request-1", status: "succeeded", intent: "default" as const, queued: false })),
+    respondMayorInteraction: vi.fn(async () => ({ session_id: "mayor-session", status: "accepted" })),
+    ...overrides,
+  };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((next) => { resolve = next; });
+  return { promise, resolve };
+}
+
 describe("App", () => {
   it("shows an accessible loading state while health is pending", () => {
     render(<App api={fakeAPI(new Promise<Health>(() => undefined))} />);
@@ -128,6 +170,77 @@ describe("App", () => {
     expect(screen.getByRole("tab", { name: "Convoys" })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByRole("tab", { name: "Orders" })).toBeVisible();
     expect(await screen.findByRole("heading", { name: "Feature one", level: 2 })).toBeVisible();
+  });
+
+  it("keeps Mayor state above unmounted tabs and outside shared city refreshes", async () => {
+    const user = userEvent.setup();
+    const first = convoy("a", "Feature A");
+    const second = convoy("b", "Feature B");
+    const getMayor = vi.fn(async () => mayorView);
+    const connector = vi.fn<MayorStreamConnector>(() => () => undefined);
+    const listConvoys = vi.fn(async () => convoyList([first, second]));
+    const api = fullAPI({
+      listConvoys,
+      getConvoy: vi.fn(async (id) => detail(id === "b" ? second : first)),
+      ...mayorMethods({ getMayor }),
+    });
+    render(<App api={api} mayorConnector={connector} />);
+
+    await user.click(await screen.findByRole("button", { name: "Select convoy Feature B" }));
+    await user.click(screen.getByRole("tab", { name: "Mayor" }));
+    expect(await screen.findByRole("heading", { name: "Mayor conversation" })).toBeVisible();
+    const composer = screen.getByRole("textbox", { name: "Message Mayor" });
+    await user.type(composer, "keep this draft");
+    const transcript = screen.getByLabelText("Mayor transcript");
+    transcript.scrollTop = 42;
+    fireEvent.scroll(transcript);
+
+    const convoyCalls = listConvoys.mock.calls.length;
+    act(() => window.dispatchEvent(new Event("focus")));
+    await waitFor(() => expect(getMayor.mock.calls.length).toBeGreaterThan(1));
+    expect(listConvoys).toHaveBeenCalledTimes(convoyCalls);
+
+    await user.click(screen.getByRole("tab", { name: "Convoys" }));
+    expect(screen.getByRole("button", { name: "Select convoy Feature B" })).toHaveAttribute("aria-pressed", "true");
+    await user.click(screen.getByRole("tab", { name: "Mayor" }));
+    expect(screen.getByRole("textbox", { name: "Message Mayor" })).toHaveValue("keep this draft");
+    expect(screen.getByLabelText("Mayor transcript")).toHaveProperty("scrollTop", 42);
+    expect(connector).toHaveBeenCalledOnce();
+  });
+
+  it("preserves the pending draft and in-flight Mayor mutation while its tab is unmounted", async () => {
+    const user = userEvent.setup();
+    const accepted = deferred<Awaited<ReturnType<MayorAPI["sendMayorMessage"]>>>();
+    const sendMayorMessage = vi.fn(() => accepted.promise);
+    const pendingView: MayorView = {
+      ...mayorView,
+      pending: { request_id: "pending-1", kind: "question", prompt: "Continue?", options: ["allow"], metadata: {} },
+    };
+    const api = fullAPI({
+      ...mayorMethods({ getMayor: vi.fn(async () => pendingView), sendMayorMessage }),
+    });
+    render(<App api={api} mayorConnector={() => () => undefined} />);
+
+    await user.click(await screen.findByRole("tab", { name: "Mayor" }));
+    await user.type(await screen.findByRole("textbox", { name: "Message Mayor" }), "message in flight");
+    await user.type(screen.getByRole("textbox", { name: "Mayor response details" }), "keep pending detail");
+    await user.click(screen.getByRole("button", { name: "Send to Mayor" }));
+    expect(screen.getByRole("button", { name: "Send to Mayor" })).toBeDisabled();
+
+    await user.click(screen.getByRole("tab", { name: "Convoys" }));
+    await user.click(screen.getByRole("tab", { name: "Mayor" }));
+    expect(screen.getByRole("textbox", { name: "Message Mayor" })).toHaveValue("message in flight");
+    expect(screen.getByRole("textbox", { name: "Mayor response details" })).toHaveValue("keep pending detail");
+    expect(screen.getByRole("button", { name: "Send to Mayor" })).toBeDisabled();
+
+    await act(async () => {
+      accepted.resolve({ request_id: "request-1", status: "succeeded", intent: "default", queued: false });
+      await accepted.promise;
+    });
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "Message Mayor" })).toHaveValue(""));
+    expect(screen.getByRole("button", { name: "Answer allow" })).not.toBeDisabled();
+    await user.type(screen.getByRole("textbox", { name: "Message Mayor" }), "next message");
+    expect(screen.getByRole("button", { name: "Send to Mayor" })).not.toBeDisabled();
   });
 
   it("shows simultaneous convoy signals and hides percentage progress when total is zero", async () => {

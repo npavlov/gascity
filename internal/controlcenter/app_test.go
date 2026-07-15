@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/gastownhall/gascity/internal/controlcenter/gcstate"
+	"github.com/gastownhall/gascity/internal/controlcenter/mayor"
 )
 
 func staticTestFS() fs.FS {
@@ -315,6 +316,8 @@ func TestNewAppRejectsIncompleteSupervisorBundle(t *testing.T) {
 		{name: "ping", mutate: func(bundle *SupervisorBundle) { bundle.Ping = nil }},
 		{name: "state", mutate: func(bundle *SupervisorBundle) { bundle.State = nil }},
 		{name: "events", mutate: func(bundle *SupervisorBundle) { bundle.Events = nil }},
+		{name: "mayor", mutate: func(bundle *SupervisorBundle) { bundle.Mayor = nil }},
+		{name: "mayor events", mutate: func(bundle *SupervisorBundle) { bundle.MayorEvents = nil }},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -438,7 +441,48 @@ func testSupervisorBundle(t *testing.T, ping func(context.Context) error, source
 	if err != nil {
 		t.Fatalf("NewHub: %v", err)
 	}
-	return SupervisorBundle{Ping: ping, State: state, Events: hub}
+	mayorService, err := mayor.NewService("pack/named.overseer", appMayorReader{}, appMayorCommander{})
+	if err != nil {
+		t.Fatalf("New Mayor service: %v", err)
+	}
+	mayorHub, err := mayor.NewHub(mayorService, appMayorStreamSource{})
+	if err != nil {
+		t.Fatalf("New Mayor hub: %v", err)
+	}
+	return SupervisorBundle{Ping: ping, State: state, Events: hub, Mayor: mayorService, MayorEvents: mayorHub}
+}
+
+type appMayorReader struct{}
+
+func (appMayorReader) Status(context.Context) (mayor.StatusSource, error) {
+	return mayor.StatusSource{NamedSessions: []mayor.NamedSessionSource{{Identity: "pack/named.overseer", Mode: "on-demand", Status: "reserved-unmaterialized"}}}, nil
+}
+func (appMayorReader) Session(context.Context, string) (mayor.SessionSource, error) {
+	return mayor.SessionSource{}, errors.New("dormant Mayor session must not be read")
+}
+func (appMayorReader) Transcript(context.Context, string, string) (mayor.TranscriptPageSource, error) {
+	return mayor.TranscriptPageSource{}, errors.New("dormant Mayor transcript must not be read")
+}
+func (appMayorReader) Pending(context.Context, string) (mayor.PendingSource, error) {
+	return mayor.PendingSource{}, errors.New("dormant Mayor pending must not be read")
+}
+
+type appMayorCommander struct{}
+
+func (appMayorCommander) Submit(context.Context, string, string, mayor.SubmitIntent) (mayor.AcceptedSource, error) {
+	return mayor.AcceptedSource{}, errors.New("unexpected Mayor submit")
+}
+func (appMayorCommander) Respond(context.Context, string, mayor.ResponseInput) (mayor.ResponseReceipt, error) {
+	return mayor.ResponseReceipt{}, errors.New("unexpected Mayor response")
+}
+func (appMayorCommander) AwaitSubmit(context.Context, string, string, string) (mayor.SubmitResult, error) {
+	return mayor.SubmitResult{}, errors.New("unexpected Mayor submit correlation")
+}
+
+type appMayorStreamSource struct{}
+
+func (appMayorStreamSource) StreamSession(context.Context, string) (mayor.SessionEventStream, error) {
+	return nil, errors.New("dormant Mayor stream must not open")
 }
 
 var _ gcstate.Reader = (*appReader)(nil)

@@ -2,7 +2,7 @@
 
 import type { Client, Options as Options2, TDataShape } from './client';
 import { client } from './client.gen';
-import type { GetApiV1ConvoysByIdBeadsData, GetApiV1ConvoysByIdBeadsErrors, GetApiV1ConvoysByIdBeadsResponses, GetApiV1ConvoysByIdData, GetApiV1ConvoysByIdErrors, GetApiV1ConvoysByIdResponses, GetApiV1ConvoysData, GetApiV1ConvoysErrors, GetApiV1ConvoysResponses, GetApiV1HealthData, GetApiV1HealthErrors, GetApiV1HealthResponses, GetApiV1OrdersData, GetApiV1OrdersErrors, GetApiV1OrdersHistoryByBeadIdData, GetApiV1OrdersHistoryByBeadIdErrors, GetApiV1OrdersHistoryByBeadIdResponses, GetApiV1OrdersHistoryData, GetApiV1OrdersHistoryErrors, GetApiV1OrdersHistoryResponses, GetApiV1OrdersResponses, StreamControlCenterEventsData, StreamControlCenterEventsErrors, StreamControlCenterEventsResponse, StreamControlCenterEventsResponses } from './types.gen';
+import type { GetApiV1ConvoysByIdBeadsData, GetApiV1ConvoysByIdBeadsErrors, GetApiV1ConvoysByIdBeadsResponses, GetApiV1ConvoysByIdData, GetApiV1ConvoysByIdErrors, GetApiV1ConvoysByIdResponses, GetApiV1ConvoysData, GetApiV1ConvoysErrors, GetApiV1ConvoysResponses, GetApiV1HealthData, GetApiV1HealthErrors, GetApiV1HealthResponses, GetApiV1MayorData, GetApiV1MayorErrors, GetApiV1MayorResponses, GetApiV1MayorTranscriptData, GetApiV1MayorTranscriptErrors, GetApiV1MayorTranscriptResponses, GetApiV1OrdersData, GetApiV1OrdersErrors, GetApiV1OrdersHistoryByBeadIdData, GetApiV1OrdersHistoryByBeadIdErrors, GetApiV1OrdersHistoryByBeadIdResponses, GetApiV1OrdersHistoryData, GetApiV1OrdersHistoryErrors, GetApiV1OrdersHistoryResponses, GetApiV1OrdersResponses, PostApiV1MayorInteractionsByRequestIdData, PostApiV1MayorInteractionsByRequestIdErrors, PostApiV1MayorInteractionsByRequestIdResponses, PostApiV1MayorMessagesData, PostApiV1MayorMessagesErrors, PostApiV1MayorMessagesResponses, StreamControlCenterEventsData, StreamControlCenterEventsErrors, StreamControlCenterEventsResponse, StreamControlCenterEventsResponses, StreamControlCenterMayorEventsData, StreamControlCenterMayorEventsErrors, StreamControlCenterMayorEventsResponse, StreamControlCenterMayorEventsResponses } from './types.gen';
 
 export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends boolean = boolean, TResponse = unknown> = Options2<TData, ThrowOnError, TResponse> & {
     /**
@@ -44,6 +44,45 @@ export const streamControlCenterEvents = <ThrowOnError extends boolean = false>(
  * Get API v1 health
  */
 export const getApiV1Health = <ThrowOnError extends boolean = false>(options?: Options<GetApiV1HealthData, ThrowOnError>) => (options?.client ?? client).get<GetApiV1HealthResponses, GetApiV1HealthErrors, ThrowOnError>({ url: '/api/v1/health', ...options });
+
+/**
+ * Get API v1 mayor
+ */
+export const getApiV1Mayor = <ThrowOnError extends boolean = false>(options?: Options<GetApiV1MayorData, ThrowOnError>) => (options?.client ?? client).get<GetApiV1MayorResponses, GetApiV1MayorErrors, ThrowOnError>({ url: '/api/v1/mayor', ...options });
+
+/**
+ * Stream configured Mayor workspace events
+ */
+export const streamControlCenterMayorEvents = <ThrowOnError extends boolean = false>(options?: Options<StreamControlCenterMayorEventsData, ThrowOnError, StreamControlCenterMayorEventsResponse>) => (options?.client ?? client).sse.get<StreamControlCenterMayorEventsResponses, StreamControlCenterMayorEventsErrors, ThrowOnError>({ url: '/api/v1/mayor/events', ...options });
+
+/**
+ * Post API v1 mayor interactions by request ID
+ */
+export const postApiV1MayorInteractionsByRequestId = <ThrowOnError extends boolean = false>(options: Options<PostApiV1MayorInteractionsByRequestIdData, ThrowOnError>) => (options.client ?? client).post<PostApiV1MayorInteractionsByRequestIdResponses, PostApiV1MayorInteractionsByRequestIdErrors, ThrowOnError>({
+    url: '/api/v1/mayor/interactions/{request_id}',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Post API v1 mayor messages
+ */
+export const postApiV1MayorMessages = <ThrowOnError extends boolean = false>(options: Options<PostApiV1MayorMessagesData, ThrowOnError>) => (options.client ?? client).post<PostApiV1MayorMessagesResponses, PostApiV1MayorMessagesErrors, ThrowOnError>({
+    url: '/api/v1/mayor/messages',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Get API v1 mayor transcript
+ */
+export const getApiV1MayorTranscript = <ThrowOnError extends boolean = false>(options?: Options<GetApiV1MayorTranscriptData, ThrowOnError>) => (options?.client ?? client).get<GetApiV1MayorTranscriptResponses, GetApiV1MayorTranscriptErrors, ThrowOnError>({ url: '/api/v1/mayor/transcript', ...options });
 
 /**
  * Get API v1 orders

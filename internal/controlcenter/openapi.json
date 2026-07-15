@@ -256,6 +256,22 @@
         ],
         "type": "object"
       },
+      "InteractionReceipt": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "status"
+        ],
+        "type": "object"
+      },
       "Invalidation": {
         "additionalProperties": false,
         "properties": {
@@ -275,6 +291,232 @@
         "required": [
           "resources",
           "cursor"
+        ],
+        "type": "object"
+      },
+      "MayorEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "activity": {
+            "type": "string"
+          },
+          "cursor": {
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "turn",
+              "activity",
+              "pending",
+              "invalidate",
+              "stale"
+            ],
+            "type": "string"
+          },
+          "pending": {
+            "$ref": "#/components/schemas/PendingInteraction"
+          },
+          "resources": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "turn": {
+            "$ref": "#/components/schemas/TranscriptTurn"
+          }
+        },
+        "required": [
+          "kind",
+          "resources"
+        ],
+        "type": "object"
+      },
+      "MayorInteractionBody": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "maxLength": 64,
+            "minLength": 1,
+            "type": "string"
+          },
+          "metadata": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "request_id": {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$",
+            "type": "string"
+          },
+          "text": {
+            "maxLength": 65536,
+            "type": "string"
+          }
+        },
+        "required": [
+          "request_id",
+          "action"
+        ],
+        "type": "object"
+      },
+      "MayorMessageBody": {
+        "additionalProperties": false,
+        "properties": {
+          "message": {
+            "maxLength": 65536,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "type": "object"
+      },
+      "MayorProblem": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "detail": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "source": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "source",
+          "detail",
+          "retryable"
+        ],
+        "type": "object"
+      },
+      "MayorView": {
+        "additionalProperties": false,
+        "properties": {
+          "activity": {
+            "type": "string"
+          },
+          "attached": {
+            "type": "boolean"
+          },
+          "degraded": {
+            "type": "boolean"
+          },
+          "follow_up_supported": {
+            "type": "boolean"
+          },
+          "identity": {
+            "type": "string"
+          },
+          "lifecycle": {
+            "type": "string"
+          },
+          "materialized": {
+            "type": "boolean"
+          },
+          "mode": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "pending": {
+            "$ref": "#/components/schemas/PendingInteraction"
+          },
+          "problems": {
+            "items": {
+              "$ref": "#/components/schemas/MayorProblem"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "provider": {
+            "type": "string"
+          },
+          "running": {
+            "type": "boolean"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "session_name": {
+            "type": "string"
+          },
+          "stale": {
+            "type": "boolean"
+          },
+          "state": {
+            "enum": [
+              "available_dormant",
+              "idle",
+              "in_turn",
+              "sleeping",
+              "stopped",
+              "unsupported",
+              "missing",
+              "ambiguous",
+              "disconnected"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "identity",
+          "state",
+          "running",
+          "attached",
+          "follow_up_supported",
+          "materialized",
+          "degraded",
+          "stale",
+          "problems"
+        ],
+        "type": "object"
+      },
+      "MessageReceipt": {
+        "additionalProperties": false,
+        "properties": {
+          "intent": {
+            "enum": [
+              "default",
+              "follow_up"
+            ],
+            "type": "string"
+          },
+          "queued": {
+            "type": "boolean"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "request_id",
+          "status",
+          "intent",
+          "queued"
         ],
         "type": "object"
       },
@@ -405,6 +647,42 @@
           "type",
           "enabled",
           "problems"
+        ],
+        "type": "object"
+      },
+      "PendingInteraction": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "type": "string"
+          },
+          "metadata": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "options": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "prompt": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "request_id",
+          "kind",
+          "options",
+          "metadata"
         ],
         "type": "object"
       },
@@ -696,6 +974,81 @@
           "icon",
           "label",
           "tone"
+        ],
+        "type": "object"
+      },
+      "TranscriptPage": {
+        "additionalProperties": false,
+        "properties": {
+          "before": {
+            "type": "string"
+          },
+          "degraded": {
+            "type": "boolean"
+          },
+          "has_older": {
+            "type": "boolean"
+          },
+          "problems": {
+            "items": {
+              "$ref": "#/components/schemas/MayorProblem"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "returned": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "stale": {
+            "type": "boolean"
+          },
+          "total": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "turns": {
+            "items": {
+              "$ref": "#/components/schemas/TranscriptTurn"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "turns",
+          "has_older",
+          "returned",
+          "total",
+          "degraded",
+          "stale",
+          "problems"
+        ],
+        "type": "object"
+      },
+      "TranscriptTurn": {
+        "additionalProperties": false,
+        "properties": {
+          "role": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "role",
+          "text"
         ],
         "type": "object"
       },
@@ -992,6 +1345,223 @@
           }
         },
         "summary": "Get API v1 health"
+      }
+    },
+    "/api/v1/mayor": {
+      "get": {
+        "operationId": "get-api-v1-mayor",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MayorView"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "Get API v1 mayor"
+      }
+    },
+    "/api/v1/mayor/events": {
+      "get": {
+        "operationId": "streamControlCenterMayorEvents",
+        "responses": {
+          "200": {
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "items": {
+                    "properties": {
+                      "data": {
+                        "$ref": "#/components/schemas/MayorEvent"
+                      },
+                      "event": {
+                        "const": "mayor",
+                        "type": "string"
+                      },
+                      "id": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "event",
+                      "id",
+                      "data"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Server-sent Mayor events."
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Stream configured Mayor workspace events"
+      }
+    },
+    "/api/v1/mayor/interactions/{request_id}": {
+      "post": {
+        "operationId": "post-api-v1-mayor-interactions-by-request-id",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "request_id",
+            "required": true,
+            "schema": {
+              "maxLength": 256,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MayorInteractionBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InteractionReceipt"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "Post API v1 mayor interactions by request ID"
+      }
+    },
+    "/api/v1/mayor/messages": {
+      "post": {
+        "operationId": "post-api-v1-mayor-messages",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MayorMessageBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageReceipt"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "Post API v1 mayor messages"
+      }
+    },
+    "/api/v1/mayor/transcript": {
+      "get": {
+        "operationId": "get-api-v1-mayor-transcript",
+        "parameters": [
+          {
+            "description": "Exclusive older-page cursor.",
+            "explode": false,
+            "in": "query",
+            "name": "before",
+            "schema": {
+              "description": "Exclusive older-page cursor.",
+              "maxLength": 256,
+              "pattern": "^[A-Za-z0-9._:-]*$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TranscriptPage"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "Get API v1 mayor transcript"
       }
     },
     "/api/v1/orders": {

@@ -100,9 +100,70 @@ export type HealthBody = {
     supervisor_reachable: boolean;
 };
 
+export type InteractionReceipt = {
+    session_id: string;
+    status: string;
+};
+
 export type Invalidation = {
     cursor: string;
     resources: Array<string> | null;
+};
+
+export type MayorEvent = {
+    activity?: string;
+    cursor?: string;
+    kind: 'turn' | 'activity' | 'pending' | 'invalidate' | 'stale';
+    pending?: PendingInteraction;
+    resources: Array<string> | null;
+    turn?: TranscriptTurn;
+};
+
+export type MayorInteractionBody = {
+    action: string;
+    metadata?: {
+        [key: string]: string;
+    };
+    request_id: string;
+    text?: string;
+};
+
+export type MayorMessageBody = {
+    message: string;
+};
+
+export type MayorProblem = {
+    code: string;
+    detail: string;
+    retryable: boolean;
+    source: string;
+};
+
+export type MayorView = {
+    activity?: string;
+    attached: boolean;
+    degraded: boolean;
+    follow_up_supported: boolean;
+    identity: string;
+    lifecycle?: string;
+    materialized: boolean;
+    mode?: string;
+    model?: string;
+    pending?: PendingInteraction;
+    problems: Array<MayorProblem> | null;
+    provider?: string;
+    running: boolean;
+    session_id?: string;
+    session_name?: string;
+    stale: boolean;
+    state: 'available_dormant' | 'idle' | 'in_turn' | 'sleeping' | 'stopped' | 'unsupported' | 'missing' | 'ambiguous' | 'disconnected';
+};
+
+export type MessageReceipt = {
+    intent: 'default' | 'follow_up';
+    queued: boolean;
+    request_id: string;
+    status: string;
 };
 
 export type OrderRunOutput = {
@@ -135,6 +196,16 @@ export type OrderView = {
     problems: Array<Problem> | null;
     scoped_name: string;
     type: string;
+};
+
+export type PendingInteraction = {
+    kind: string;
+    metadata: {
+        [key: string]: string;
+    };
+    options: Array<string> | null;
+    prompt?: string;
+    request_id: string;
 };
 
 export type Problem = {
@@ -232,6 +303,23 @@ export type StatusSignal = {
      * Semantic display tone
      */
     tone: 'neutral' | 'info' | 'success' | 'warning' | 'danger';
+};
+
+export type TranscriptPage = {
+    before?: string;
+    degraded: boolean;
+    has_older: boolean;
+    problems: Array<MayorProblem> | null;
+    returned: number;
+    stale: boolean;
+    total: number;
+    turns: Array<TranscriptTurn> | null;
+};
+
+export type TranscriptTurn = {
+    role: string;
+    text: string;
+    timestamp?: string;
 };
 
 export type WorkflowRef = {
@@ -399,6 +487,146 @@ export type GetApiV1HealthResponses = {
 };
 
 export type GetApiV1HealthResponse = GetApiV1HealthResponses[keyof GetApiV1HealthResponses];
+
+export type GetApiV1MayorData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/mayor';
+};
+
+export type GetApiV1MayorErrors = {
+    /**
+     * Error
+     */
+    default: ErrorModel;
+};
+
+export type GetApiV1MayorError = GetApiV1MayorErrors[keyof GetApiV1MayorErrors];
+
+export type GetApiV1MayorResponses = {
+    /**
+     * OK
+     */
+    200: MayorView;
+};
+
+export type GetApiV1MayorResponse = GetApiV1MayorResponses[keyof GetApiV1MayorResponses];
+
+export type StreamControlCenterMayorEventsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/mayor/events';
+};
+
+export type StreamControlCenterMayorEventsErrors = {
+    /**
+     * Internal Server Error
+     */
+    500: ErrorModel;
+    /**
+     * Service Unavailable
+     */
+    503: ErrorModel;
+};
+
+export type StreamControlCenterMayorEventsError = StreamControlCenterMayorEventsErrors[keyof StreamControlCenterMayorEventsErrors];
+
+export type StreamControlCenterMayorEventsResponses = {
+    /**
+     * Server-sent Mayor events.
+     */
+    200: Array<{
+        data: MayorEvent;
+        event: 'mayor';
+        id: string;
+    }>;
+};
+
+export type StreamControlCenterMayorEventsResponse = StreamControlCenterMayorEventsResponses[keyof StreamControlCenterMayorEventsResponses];
+
+export type PostApiV1MayorInteractionsByRequestIdData = {
+    body: MayorInteractionBody;
+    path: {
+        request_id: string;
+    };
+    query?: never;
+    url: '/api/v1/mayor/interactions/{request_id}';
+};
+
+export type PostApiV1MayorInteractionsByRequestIdErrors = {
+    /**
+     * Error
+     */
+    default: ErrorModel;
+};
+
+export type PostApiV1MayorInteractionsByRequestIdError = PostApiV1MayorInteractionsByRequestIdErrors[keyof PostApiV1MayorInteractionsByRequestIdErrors];
+
+export type PostApiV1MayorInteractionsByRequestIdResponses = {
+    /**
+     * OK
+     */
+    200: InteractionReceipt;
+};
+
+export type PostApiV1MayorInteractionsByRequestIdResponse = PostApiV1MayorInteractionsByRequestIdResponses[keyof PostApiV1MayorInteractionsByRequestIdResponses];
+
+export type PostApiV1MayorMessagesData = {
+    body: MayorMessageBody;
+    path?: never;
+    query?: never;
+    url: '/api/v1/mayor/messages';
+};
+
+export type PostApiV1MayorMessagesErrors = {
+    /**
+     * Error
+     */
+    default: ErrorModel;
+};
+
+export type PostApiV1MayorMessagesError = PostApiV1MayorMessagesErrors[keyof PostApiV1MayorMessagesErrors];
+
+export type PostApiV1MayorMessagesResponses = {
+    /**
+     * OK
+     */
+    200: MessageReceipt;
+};
+
+export type PostApiV1MayorMessagesResponse = PostApiV1MayorMessagesResponses[keyof PostApiV1MayorMessagesResponses];
+
+export type GetApiV1MayorTranscriptData = {
+    body?: never;
+    path?: never;
+    query?: {
+        /**
+         * Exclusive older-page cursor.
+         */
+        before?: string;
+    };
+    url: '/api/v1/mayor/transcript';
+};
+
+export type GetApiV1MayorTranscriptErrors = {
+    /**
+     * Error
+     */
+    default: ErrorModel;
+};
+
+export type GetApiV1MayorTranscriptError = GetApiV1MayorTranscriptErrors[keyof GetApiV1MayorTranscriptErrors];
+
+export type GetApiV1MayorTranscriptResponses = {
+    /**
+     * OK
+     */
+    200: TranscriptPage;
+};
+
+export type GetApiV1MayorTranscriptResponse = GetApiV1MayorTranscriptResponses[keyof GetApiV1MayorTranscriptResponses];
 
 export type GetApiV1OrdersData = {
     body?: never;
