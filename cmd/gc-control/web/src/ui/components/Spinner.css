@@ -1,0 +1,4 @@
+.cc-spinner { display: inline-flex; align-items: center; justify-content: center; }
+.cc-spinner__indicator { width: var(--cc-size-icon-md); height: var(--cc-size-icon-md); border: var(--cc-space-1) solid var(--cc-color-border-subtle); border-top-color: var(--cc-color-action-primary); border-radius: var(--cc-radius-full); animation: cc-spinner-spin var(--cc-motion-duration-slow) linear infinite; }
+
+@keyframes cc-spinner-spin { to { transform: rotate(1turn); } }

@@ -1,0 +1,9 @@
+.cc-select {
+  min-height: var(--cc-size-control-regular);
+  padding: var(--cc-space-1) var(--cc-space-3);
+  color: var(--cc-color-text-primary);
+  background: var(--cc-color-surface-panel);
+  border: var(--cc-space-0) solid var(--cc-color-border-default);
+  border-radius: var(--cc-radius-md);
+}
+.cc-select:focus-visible { outline: none; border-color: var(--cc-color-border-focus); box-shadow: var(--cc-shadow-focus); }

@@ -8,6 +8,9 @@
   },
   "scripts": {
     "gen": "openapi-typescript ../../../internal/controlcenter/openapi.json -o src/generated/schema.d.ts && openapi-ts",
+    "lint": "eslint . && node scripts/check-ui-boundaries.mjs",
+    "stylelint": "stylelint 'src/**/*.css'",
+    "check": "npm run typecheck && npm test && npm run lint && npm run stylelint && npm run build",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "build": "vite build",
@@ -16,11 +19,16 @@
   },
   "dependencies": {
     "@hey-api/client-fetch": "^0.13.1",
+    "@radix-ui/react-dialog": "1.1.19",
+    "@radix-ui/react-tabs": "1.1.17",
+    "@radix-ui/react-tooltip": "1.2.12",
+    "lucide-react": "1.24.0",
     "openapi-fetch": "^0.13.8",
     "react": "^19.2.7",
     "react-dom": "^19.2.7"
   },
   "devDependencies": {
+    "@eslint/js": "9.39.5",
     "@hey-api/openapi-ts": "^0.96.0",
     "@testing-library/dom": "^10.4.1",
     "@testing-library/jest-dom": "^6.9.1",
@@ -29,9 +37,19 @@
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^4.7.0",
+    "eslint": "9.39.5",
+    "eslint-plugin-jsx-a11y": "6.10.2",
+    "eslint-plugin-react-hooks": "7.1.1",
+    "eslint-plugin-react-refresh": "0.5.3",
+    "globals": "17.7.0",
     "jsdom": "^26.1.0",
     "openapi-typescript": "^7.13.0",
+    "postcss": "8.5.19",
+    "stylelint": "16.26.1",
+    "stylelint-config-standard": "38.0.0",
+    "stylelint-declaration-strict-value": "1.10.11",
     "typescript": "^5.9.3",
+    "typescript-eslint": "8.64.0",
     "vite": "^6.4.2",
     "vitest": "^4.1.4"
   }

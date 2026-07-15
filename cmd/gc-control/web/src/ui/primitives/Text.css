@@ -1,0 +1,5 @@
+.cc-text { color: var(--cc-color-text-primary); font-size: var(--cc-font-size-md); line-height: var(--cc-font-line-default); }
+.cc-text[data-variant="caption"] { color: var(--cc-color-text-muted); font-size: var(--cc-font-size-sm); }
+.cc-text[data-variant="label"] { font-size: var(--cc-font-size-sm); font-weight: var(--cc-font-weight-medium); }
+.cc-text[data-variant="title"] { font-size: var(--cc-font-size-xl); font-weight: var(--cc-font-weight-semibold); line-height: var(--cc-font-line-compact); }
+.cc-text[data-variant="code"] { font-family: var(--cc-font-family-mono); font-size: var(--cc-font-size-sm); }

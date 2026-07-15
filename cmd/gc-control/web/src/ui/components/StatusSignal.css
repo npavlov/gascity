@@ -1,0 +1,6 @@
+.cc-status-signal { display: inline-flex; gap: var(--cc-space-2); align-items: center; width: fit-content; color: var(--cc-color-neutral-foreground); font-weight: var(--cc-font-weight-medium); }
+.cc-status-signal[data-tone="info"] { color: var(--cc-color-info-foreground); }
+.cc-status-signal[data-tone="success"] { color: var(--cc-color-success-foreground); }
+.cc-status-signal[data-tone="warning"] { color: var(--cc-color-warning-foreground); }
+.cc-status-signal[data-tone="danger"] { color: var(--cc-color-danger-foreground); }
+.cc-status-signal svg { flex: none; width: var(--cc-size-icon-md); height: var(--cc-size-icon-md); }

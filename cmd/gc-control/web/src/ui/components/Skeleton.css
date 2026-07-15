@@ -1,0 +1,3 @@
+.cc-skeleton { min-height: var(--cc-space-6); background: var(--cc-color-neutral-surface); border-radius: var(--cc-radius-md); animation: cc-skeleton-pulse var(--cc-motion-duration-slow) var(--cc-motion-ease-standard) infinite alternate; }
+
+@keyframes cc-skeleton-pulse { from { opacity: 0.55; } to { opacity: 1; } }

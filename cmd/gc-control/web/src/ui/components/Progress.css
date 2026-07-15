@@ -1,0 +1,4 @@
+.cc-progress { display: grid; gap: var(--cc-space-2); }
+.cc-progress__label { color: var(--cc-color-text-secondary); font-size: var(--cc-font-size-sm); font-weight: var(--cc-font-weight-medium); }
+.cc-progress__track { width: 100%; height: var(--cc-space-2); overflow: hidden; background: var(--cc-color-neutral-surface); border-radius: var(--cc-radius-full); }
+.cc-progress__value { display: block; width: var(--cc-progress-value); height: 100%; background: var(--cc-color-action-primary); border-radius: inherit; }

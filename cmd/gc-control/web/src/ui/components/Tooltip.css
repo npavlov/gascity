@@ -1,0 +1,1 @@
+.cc-tooltip { z-index: var(--cc-z-dropdown); max-width: 18rem; padding: var(--cc-space-2) var(--cc-space-3); color: var(--cc-color-text-inverse); font-size: var(--cc-font-size-sm); background: var(--cc-color-text-primary); border-radius: var(--cc-radius-md); box-shadow: var(--cc-shadow-overlay); }

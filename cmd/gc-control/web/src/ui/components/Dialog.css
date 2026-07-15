@@ -1,0 +1,5 @@
+.cc-dialog__overlay { position: fixed; z-index: var(--cc-z-overlay); inset: var(--cc-space-0); background: var(--cc-color-surface-overlay); }
+.cc-dialog { position: fixed; z-index: var(--cc-z-dialog); top: 50%; left: 50%; width: min(34rem, calc(100% - var(--cc-space-8))); max-height: calc(100% - var(--cc-space-8)); padding: var(--cc-space-5); overflow: auto; color: var(--cc-color-text-primary); background: var(--cc-color-surface-raised); border: var(--cc-space-0) solid var(--cc-color-border-default); border-radius: var(--cc-radius-lg); box-shadow: var(--cc-shadow-overlay); transform: translate(-50%, -50%); }
+.cc-dialog:focus-visible { outline: none; border-color: var(--cc-color-border-focus); box-shadow: var(--cc-shadow-focus); }
+.cc-dialog__title { margin: var(--cc-space-0); font-size: var(--cc-font-size-lg); }
+.cc-dialog__body { margin-top: var(--cc-space-4); }

@@ -1,0 +1,10 @@
+.cc-textarea {
+  min-height: var(--cc-space-12);
+  padding: var(--cc-space-2) var(--cc-space-3);
+  color: var(--cc-color-text-primary);
+  resize: vertical;
+  background: var(--cc-color-surface-panel);
+  border: var(--cc-space-0) solid var(--cc-color-border-default);
+  border-radius: var(--cc-radius-md);
+}
+.cc-textarea:focus-visible { outline: none; border-color: var(--cc-color-border-focus); box-shadow: var(--cc-shadow-focus); }

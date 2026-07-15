@@ -1,0 +1,5 @@
+.cc-empty-state { display: grid; gap: var(--cc-space-2); place-items: center; padding: var(--cc-space-8) var(--cc-space-4); color: var(--cc-color-text-secondary); text-align: center; }
+.cc-empty-state > svg { width: var(--cc-size-icon-lg); height: var(--cc-size-icon-lg); color: var(--cc-color-text-muted); }
+.cc-empty-state h3 { margin: var(--cc-space-0); color: var(--cc-color-text-primary); font-size: var(--cc-font-size-lg); }
+.cc-empty-state__description { max-width: 38rem; }
+.cc-empty-state__actions { display: flex; gap: var(--cc-space-2); flex-wrap: wrap; justify-content: center; margin-top: var(--cc-space-2); }

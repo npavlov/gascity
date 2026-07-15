@@ -1,0 +1,10 @@
+.cc-grid { display: grid; gap: var(--cc-space-3); min-width: 0; }
+.cc-grid[data-gap="0"] { gap: var(--cc-space-0); }
+.cc-grid[data-gap="1"] { gap: var(--cc-space-1); }
+.cc-grid[data-gap="2"] { gap: var(--cc-space-2); }
+.cc-grid[data-gap="4"] { gap: var(--cc-space-4); }
+.cc-grid[data-gap="5"] { gap: var(--cc-space-5); }
+.cc-grid[data-gap="6"] { gap: var(--cc-space-6); }
+.cc-grid[data-gap="8"] { gap: var(--cc-space-8); }
+.cc-grid[data-gap="10"] { gap: var(--cc-space-10); }
+.cc-grid[data-gap="12"] { gap: var(--cc-space-12); }

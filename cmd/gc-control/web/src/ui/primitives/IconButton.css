@@ -1,0 +1,3 @@
+.cc-icon-button { width: var(--cc-size-control-regular); padding: var(--cc-space-0); }
+.cc-icon-button[data-size="compact"] { width: var(--cc-size-control-compact); }
+.cc-icon-button svg { width: var(--cc-size-icon-md); height: var(--cc-size-icon-md); }

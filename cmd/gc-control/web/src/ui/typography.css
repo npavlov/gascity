@@ -1,0 +1,22 @@
+html {
+  font-family: var(--cc-font-family-sans);
+  font-size: var(--cc-font-size-md);
+  line-height: var(--cc-font-line-default);
+  color: var(--cc-color-text-primary);
+  background: var(--cc-color-surface-canvas);
+}
+
+body,
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+code,
+pre,
+kbd,
+samp {
+  font-family: var(--cc-font-family-mono);
+}
