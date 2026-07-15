@@ -10,7 +10,11 @@ import (
 	"github.com/gastownhall/gascity/internal/controlcenter/mailbox"
 )
 
-const mailSchemaVersion = 1
+const (
+	mailSchemaVersion   = 1
+	mailCursorMaxBytes  = 1024
+	mailRigHintMaxBytes = 128
+)
 
 // MailMessage is the versioned wire projection for one mailbox row/detail.
 type MailMessage struct {
@@ -81,6 +85,9 @@ func (input *mailListInput) Resolve(ctx huma.Context) []error {
 	if query.Has("cursor") && input.Cursor == "" {
 		validationErrors = append(validationErrors, &huma.ErrorDetail{Location: "query.cursor", Message: "must not be empty when supplied"})
 	}
+	if len(input.Cursor) > mailCursorMaxBytes {
+		validationErrors = append(validationErrors, &huma.ErrorDetail{Location: "query.cursor", Message: "must be at most 1024 bytes"})
+	}
 	return validationErrors
 }
 
@@ -95,10 +102,14 @@ type mailLookupInput struct {
 
 func (input *mailLookupInput) Resolve(ctx huma.Context) []error {
 	u := ctx.URL()
+	validationErrors := make([]error, 0, 2)
 	if u.Query().Has("rig") && input.Rig == "" {
-		return []error{&huma.ErrorDetail{Location: "query.rig", Message: "must not be empty when supplied"}}
+		validationErrors = append(validationErrors, &huma.ErrorDetail{Location: "query.rig", Message: "must not be empty when supplied"})
 	}
-	return nil
+	if len(input.Rig) > mailRigHintMaxBytes {
+		validationErrors = append(validationErrors, &huma.ErrorDetail{Location: "query.rig", Message: "must be at most 128 bytes"})
+	}
+	return validationErrors
 }
 
 type mailMessageOutput struct {

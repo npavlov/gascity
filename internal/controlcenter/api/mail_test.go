@@ -115,6 +115,29 @@ func TestMailRoutesValidateBeforeCallingReader(t *testing.T) {
 	}
 }
 
+func TestMailRoutesRejectMultibyteInputsByByteLengthBeforeReader(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+	}{
+		{name: "list cursor", path: "/api/v1/mail?cursor=" + url.QueryEscape(strings.Repeat("é", 513))},
+		{name: "detail rig", path: "/api/v1/mail/mail-1?rig=" + url.QueryEscape(strings.Repeat("é", 65))},
+		{name: "thread rig", path: "/api/v1/mail/thread-1/thread?rig=" + url.QueryEscape(strings.Repeat("é", 65))},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			reader := &fakeMailboxReader{}
+			mux, _ := registeredMailAPI(t, reader)
+			if got := requestAPI(t, mux, test.path).Code; got != http.StatusUnprocessableEntity {
+				t.Fatalf("status = %d, want 422", got)
+			}
+			if reader.calls() != 0 {
+				t.Fatalf("invalid request called reader %d times", reader.calls())
+			}
+		})
+	}
+}
+
 func TestMailRoutesMapStableErrors(t *testing.T) {
 	tests := []struct {
 		name string
