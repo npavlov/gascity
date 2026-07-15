@@ -1,6 +1,6 @@
 import type { components } from "@/generated/schema";
 
-export type LiveResource = "convoys" | "orders";
+export type LiveResource = "convoys" | "orders" | "mail";
 type Invalidation = components["schemas"]["Invalidation"];
 
 export interface EventSourceLike {
@@ -42,7 +42,7 @@ function decodeResources(data: string): LiveResource[] | undefined {
     }
     const resources = new Set<LiveResource>();
     for (const resource of decoded.resources) {
-      if (resource === "convoys" || resource === "orders") resources.add(resource);
+      if (resource === "convoys" || resource === "orders" || resource === "mail") resources.add(resource);
     }
     if (resources.size === 0) return undefined;
     return [...resources].sort();

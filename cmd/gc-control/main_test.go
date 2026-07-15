@@ -18,6 +18,7 @@ import (
 	"github.com/gastownhall/gascity/internal/api/genclient"
 	"github.com/gastownhall/gascity/internal/controlcenter"
 	"github.com/gastownhall/gascity/internal/controlcenter/gcstate"
+	"github.com/gastownhall/gascity/internal/controlcenter/mailbox"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -135,6 +136,26 @@ func TestSupervisorClientSharesOneTypedAndRawClientWithoutWholeResponseTimeout(t
 	var raw gcstate.RawEventClient = typed.ClientInterface
 	if raw != underlying {
 		t.Fatalf("typed/raw facets do not share one concrete generated client: typed=%T raw=%T", responses, raw)
+	}
+}
+
+func TestSupervisorBundleIncludesMailReaderOnTheSharedHTTPClient(t *testing.T) {
+	requests := 0
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		requests++
+		if request.URL.Path != "/v0/city/taxdome/mail/count" {
+			return nil, fmt.Errorf("unexpected path %s", request.URL.Path)
+		}
+		return jsonResponse(request, `{"total":4,"unread":2}`), nil
+	})}
+	bundle, err := newSupervisorBundle("http://supervisor.test", "taxdome", client)
+	if err != nil {
+		t.Fatalf("newSupervisorBundle: %v", err)
+	}
+	var reader mailbox.Reader = bundle.Mail
+	count, err := reader.Count(context.Background())
+	if err != nil || count.Total != 4 || count.Unread != 2 || requests != 1 {
+		t.Fatalf("mail count = %#v, err=%v requests=%d", count, err, requests)
 	}
 }
 

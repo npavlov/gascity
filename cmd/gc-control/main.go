@@ -16,6 +16,7 @@ import (
 	"github.com/gastownhall/gascity/internal/api/genclient"
 	"github.com/gastownhall/gascity/internal/controlcenter"
 	"github.com/gastownhall/gascity/internal/controlcenter/gcstate"
+	"github.com/gastownhall/gascity/internal/controlcenter/mailbox"
 )
 
 const supervisorTimeout = 3 * time.Second
@@ -115,6 +116,10 @@ func newSupervisorBundle(baseURL, cityName string, client *http.Client) (control
 	if err != nil {
 		return controlcenter.SupervisorBundle{}, fmt.Errorf("control center: create Supervisor event hub: %w", err)
 	}
+	mail, err := mailbox.NewClient(cityName, typedClient)
+	if err != nil {
+		return controlcenter.SupervisorBundle{}, fmt.Errorf("control center: create Supervisor mail client: %w", err)
+	}
 	ping := func(ctx context.Context) error {
 		callCtx, cancel := context.WithTimeout(ctx, supervisorTimeout)
 		defer cancel()
@@ -127,5 +132,5 @@ func newSupervisorBundle(baseURL, cityName string, client *http.Client) (control
 		}
 		return nil
 	}
-	return controlcenter.SupervisorBundle{Ping: ping, State: state, Events: events}, nil
+	return controlcenter.SupervisorBundle{Ping: ping, State: state, Events: events, Mail: mail}, nil
 }

@@ -278,6 +278,208 @@
         ],
         "type": "object"
       },
+      "MailCount": {
+        "additionalProperties": false,
+        "properties": {
+          "partial": {
+            "type": "boolean"
+          },
+          "partial_errors": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "schema_version": {
+            "format": "int64",
+            "minimum": 1,
+            "type": "integer"
+          },
+          "total": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "unread": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "schema_version",
+          "total",
+          "unread",
+          "partial",
+          "partial_errors"
+        ],
+        "type": "object"
+      },
+      "MailMessage": {
+        "additionalProperties": false,
+        "properties": {
+          "body": {
+            "type": "string"
+          },
+          "cc": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "from": {
+            "type": "string"
+          },
+          "id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "priority": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "read": {
+            "type": "boolean"
+          },
+          "reply_to": {
+            "type": "string"
+          },
+          "rig": {
+            "type": "string"
+          },
+          "schema_version": {
+            "format": "int64",
+            "minimum": 1,
+            "type": "integer"
+          },
+          "subject": {
+            "type": "string"
+          },
+          "thread_id": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "schema_version",
+          "id",
+          "from",
+          "to",
+          "subject",
+          "body",
+          "created_at",
+          "read",
+          "cc"
+        ],
+        "type": "object"
+      },
+      "MailPage": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/MailMessage"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "next_cursor": {
+            "type": "string"
+          },
+          "partial": {
+            "type": "boolean"
+          },
+          "partial_errors": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "schema_version": {
+            "format": "int64",
+            "minimum": 1,
+            "type": "integer"
+          },
+          "total": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "schema_version",
+          "items",
+          "total",
+          "partial",
+          "partial_errors"
+        ],
+        "type": "object"
+      },
+      "MailThread": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/MailMessage"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "partial": {
+            "type": "boolean"
+          },
+          "partial_errors": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "schema_version": {
+            "format": "int64",
+            "minimum": 1,
+            "type": "integer"
+          },
+          "total": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "schema_version",
+          "items",
+          "total",
+          "partial",
+          "truncated",
+          "partial_errors"
+        ],
+        "type": "object"
+      },
       "OrderRunOutput": {
         "additionalProperties": false,
         "properties": {
@@ -992,6 +1194,212 @@
           }
         },
         "summary": "Get API v1 health"
+      }
+    },
+    "/api/v1/mail": {
+      "get": {
+        "operationId": "get-api-v1-mail",
+        "parameters": [
+          {
+            "description": "Inbox filter.",
+            "explode": false,
+            "in": "query",
+            "name": "status",
+            "schema": {
+              "default": "unread",
+              "description": "Inbox filter.",
+              "enum": [
+                "unread",
+                "all"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "description": "Opaque Supervisor page cursor.",
+            "explode": false,
+            "in": "query",
+            "name": "cursor",
+            "schema": {
+              "description": "Opaque Supervisor page cursor.",
+              "maxLength": 1024,
+              "type": "string"
+            }
+          },
+          {
+            "description": "Maximum messages in this page.",
+            "explode": false,
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 50,
+              "description": "Maximum messages in this page.",
+              "format": "int64",
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MailPage"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "Get API v1 mail"
+      }
+    },
+    "/api/v1/mail/count": {
+      "get": {
+        "operationId": "get-api-v1-mail-count",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MailCount"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "Get API v1 mail count"
+      }
+    },
+    "/api/v1/mail/{id}": {
+      "get": {
+        "operationId": "get-api-v1-mail-by-id",
+        "parameters": [
+          {
+            "description": "Mail message or thread ID.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "description": "Mail message or thread ID.",
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Opaque provider lookup hint.",
+            "explode": false,
+            "in": "query",
+            "name": "rig",
+            "schema": {
+              "description": "Opaque provider lookup hint.",
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MailMessage"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "Get API v1 mail by ID"
+      }
+    },
+    "/api/v1/mail/{id}/thread": {
+      "get": {
+        "operationId": "get-api-v1-mail-by-id-thread",
+        "parameters": [
+          {
+            "description": "Mail message or thread ID.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "description": "Mail message or thread ID.",
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Opaque provider lookup hint.",
+            "explode": false,
+            "in": "query",
+            "name": "rig",
+            "schema": {
+              "description": "Opaque provider lookup hint.",
+              "maxLength": 128,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MailThread"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Error"
+          }
+        },
+        "summary": "Get API v1 mail by ID thread"
       }
     },
     "/api/v1/orders": {

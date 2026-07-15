@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/gastownhall/gascity/internal/controlcenter/gcstate"
+	"github.com/gastownhall/gascity/internal/controlcenter/mailbox"
 )
 
 func staticTestFS() fs.FS {
@@ -315,6 +316,7 @@ func TestNewAppRejectsIncompleteSupervisorBundle(t *testing.T) {
 		{name: "ping", mutate: func(bundle *SupervisorBundle) { bundle.Ping = nil }},
 		{name: "state", mutate: func(bundle *SupervisorBundle) { bundle.State = nil }},
 		{name: "events", mutate: func(bundle *SupervisorBundle) { bundle.Events = nil }},
+		{name: "mail", mutate: func(bundle *SupervisorBundle) { bundle.Mail = nil }},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -438,7 +440,27 @@ func testSupervisorBundle(t *testing.T, ping func(context.Context) error, source
 	if err != nil {
 		t.Fatalf("NewHub: %v", err)
 	}
-	return SupervisorBundle{Ping: ping, State: state, Events: hub}
+	return SupervisorBundle{Ping: ping, State: state, Events: hub, Mail: &appMailbox{}}
 }
 
 var _ gcstate.Reader = (*appReader)(nil)
+
+type appMailbox struct{}
+
+func (*appMailbox) Count(context.Context) (mailbox.Count, error) {
+	return mailbox.Count{PartialErrors: []string{}}, nil
+}
+
+func (*appMailbox) List(context.Context, mailbox.Query) (mailbox.Page, error) {
+	return mailbox.Page{Items: []mailbox.Message{}, PartialErrors: []string{}}, nil
+}
+
+func (*appMailbox) Get(context.Context, string, *string) (mailbox.Message, error) {
+	return mailbox.Message{ID: "mail-1", CC: []string{}}, nil
+}
+
+func (*appMailbox) Thread(context.Context, string, *string) (mailbox.Thread, error) {
+	return mailbox.Thread{Items: []mailbox.Message{}, PartialErrors: []string{}}, nil
+}
+
+var _ mailbox.Reader = (*appMailbox)(nil)

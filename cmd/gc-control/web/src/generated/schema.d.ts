@@ -92,6 +92,74 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/mail": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get API v1 mail */
+        get: operations["get-api-v1-mail"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/mail/count": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get API v1 mail count */
+        get: operations["get-api-v1-mail-count"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/mail/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get API v1 mail by ID */
+        get: operations["get-api-v1-mail-by-id"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/mail/{id}/thread": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get API v1 mail by ID thread */
+        get: operations["get-api-v1-mail-by-id-thread"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/orders": {
         parameters: {
             query?: never;
@@ -241,6 +309,54 @@ export interface components {
         Invalidation: {
             cursor: string;
             resources: string[] | null;
+        };
+        MailCount: {
+            partial: boolean;
+            partial_errors: string[] | null;
+            /** Format: int64 */
+            schema_version: number;
+            /** Format: int64 */
+            total: number;
+            /** Format: int64 */
+            unread: number;
+        };
+        MailMessage: {
+            body: string;
+            cc: string[] | null;
+            /** Format: date-time */
+            created_at: string;
+            from: string;
+            id: string;
+            /** Format: int64 */
+            priority?: number;
+            read: boolean;
+            reply_to?: string;
+            rig?: string;
+            /** Format: int64 */
+            schema_version: number;
+            subject: string;
+            thread_id?: string;
+            to: string;
+        };
+        MailPage: {
+            items: components["schemas"]["MailMessage"][] | null;
+            next_cursor?: string;
+            partial: boolean;
+            partial_errors: string[] | null;
+            /** Format: int64 */
+            schema_version: number;
+            /** Format: int64 */
+            total: number;
+        };
+        MailThread: {
+            items: components["schemas"]["MailMessage"][] | null;
+            partial: boolean;
+            partial_errors: string[] | null;
+            /** Format: int64 */
+            schema_version: number;
+            /** Format: int64 */
+            total: number;
+            truncated: boolean;
         };
         OrderRunOutput: {
             bead_id: string;
@@ -529,6 +645,141 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HealthBody"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "get-api-v1-mail": {
+        parameters: {
+            query?: {
+                /** @description Inbox filter. */
+                status?: "unread" | "all";
+                /** @description Opaque Supervisor page cursor. */
+                cursor?: string;
+                /** @description Maximum messages in this page. */
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MailPage"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "get-api-v1-mail-count": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MailCount"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "get-api-v1-mail-by-id": {
+        parameters: {
+            query?: {
+                /** @description Opaque provider lookup hint. */
+                rig?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Mail message or thread ID. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MailMessage"];
+                };
+            };
+            /** @description Error */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ErrorModel"];
+                };
+            };
+        };
+    };
+    "get-api-v1-mail-by-id-thread": {
+        parameters: {
+            query?: {
+                /** @description Opaque provider lookup hint. */
+                rig?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Mail message or thread ID. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MailThread"];
                 };
             };
             /** @description Error */

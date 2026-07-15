@@ -1,0 +1,137 @@
+.mail-workspace {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--cc-space-4);
+  align-items: start;
+  width: 100%;
+  min-width: var(--cc-space-0);
+}
+
+.mail-workspace__rail {
+  flex: var(--cc-flex-cockpit-nav-grow) 1 var(--cc-size-cockpit-nav-min);
+  min-width: min(100%, var(--cc-size-cockpit-nav-min));
+}
+
+.mail-workspace__detail {
+  flex: var(--cc-flex-cockpit-tool-grow) 1 var(--cc-size-cockpit-tool-min);
+  min-width: var(--cc-space-0);
+}
+
+.mail-filter,
+.mail-row__heading,
+.mail-row__meta,
+.mail-detail-heading,
+.mail-thread-heading,
+.mail-thread-message__heading {
+  display: flex;
+  gap: var(--cc-space-2);
+  align-items: center;
+  justify-content: space-between;
+  min-width: var(--cc-space-0);
+}
+
+.mail-loaded-count {
+  display: block;
+  margin-top: var(--cc-space-3);
+}
+
+.mail-notices,
+.mail-list,
+.mail-loading,
+.mail-thread {
+  margin-top: var(--cc-space-3);
+}
+
+.mail-notice,
+.mail-problem {
+  width: 100%;
+  padding: var(--cc-space-2) var(--cc-space-3);
+  border: var(--cc-size-border-default) solid var(--cc-color-border-subtle);
+  border-radius: var(--cc-radius-md);
+  background: var(--cc-color-neutral-surface);
+}
+
+.mail-row {
+  display: grid;
+  width: 100%;
+  gap: var(--cc-space-2);
+  justify-items: stretch;
+  overflow-wrap: anywhere;
+  text-align: left;
+  white-space: normal;
+  border: var(--cc-size-border-default) solid var(--cc-color-border-subtle);
+}
+
+.mail-row[aria-pressed="true"] {
+  border-color: var(--cc-color-border-focus);
+  background: var(--cc-color-surface-active);
+}
+
+.mail-row time,
+.mail-thread-message time {
+  color: var(--cc-color-text-muted);
+  font-size: var(--cc-font-size-xs);
+}
+
+.mail-read-signal {
+  flex: 0 0 auto;
+}
+
+.mail-load-more {
+  width: 100%;
+  margin-top: var(--cc-space-3);
+}
+
+.mail-metadata {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, var(--cc-size-cockpit-nav-min)), 1fr));
+  gap: var(--cc-space-3);
+  margin: var(--cc-space-0);
+}
+
+.mail-metadata > div {
+  min-width: var(--cc-space-0);
+  padding: var(--cc-space-2) var(--cc-space-3);
+  border: var(--cc-size-border-default) solid var(--cc-color-border-subtle);
+  border-radius: var(--cc-radius-md);
+  overflow-wrap: anywhere;
+}
+
+.mail-metadata dt {
+  color: var(--cc-color-text-muted);
+  font-size: var(--cc-font-size-xs);
+  font-weight: var(--cc-font-weight-medium);
+}
+
+.mail-metadata dd {
+  margin: var(--cc-space-1) var(--cc-space-0) var(--cc-space-0);
+}
+
+.mail-body {
+  display: block;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.mail-thread-message {
+  display: grid;
+  gap: var(--cc-space-3);
+  min-width: var(--cc-space-0);
+  padding: var(--cc-space-3);
+  border: var(--cc-size-border-default) solid var(--cc-color-border-subtle);
+  border-radius: var(--cc-radius-md);
+  background: var(--cc-color-surface-raised);
+}
+
+@media (width <= 48rem) {
+  .mail-workspace__rail,
+  .mail-workspace__detail {
+    flex-basis: 100%;
+    width: 100%;
+  }
+
+  .mail-detail-heading,
+  .mail-thread-message__heading {
+    align-items: flex-start;
+  }
+}

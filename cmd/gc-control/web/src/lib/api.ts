@@ -13,6 +13,10 @@ export type OrderList = components["schemas"]["ResourceListOrderView"];
 export type OrderRun = components["schemas"]["OrderRunView"];
 export type OrderRunList = components["schemas"]["ResourceListOrderRunView"];
 export type OrderRunOutput = components["schemas"]["OrderRunOutput"];
+export type MailCount = components["schemas"]["MailCount"];
+export type MailMessage = components["schemas"]["MailMessage"];
+export type MailPage = components["schemas"]["MailPage"];
+export type MailThread = components["schemas"]["MailThread"];
 
 export interface HealthAPI {
   health(signal?: AbortSignal): Promise<Health>;
@@ -30,11 +34,25 @@ export interface OrdersAPI {
   getOrderRunOutput(beadID: string, storeRef: string, signal?: AbortSignal): Promise<OrderRunOutput>;
 }
 
+export interface MailAPI {
+  getMailCount(signal?: AbortSignal): Promise<MailCount>;
+  listMail(status: "unread" | "all", cursor?: string, limit?: number, signal?: AbortSignal): Promise<MailPage>;
+  getMail(id: string, rig?: string, signal?: AbortSignal): Promise<MailMessage>;
+  getMailThread(idOrThreadID: string, rig?: string, signal?: AbortSignal): Promise<MailThread>;
+}
+
+export class ControlCenterAPIError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = "ControlCenterAPIError";
+  }
+}
+
 // Feature methods remain optional at the composition boundary so health-only
 // embedders and tests do not need unrelated fakes. The production export below
 // implements every facet.
-export type ControlCenterAPI = HealthAPI & Partial<ConvoysAPI & OrdersAPI>;
-export type LiveControlCenterAPI = HealthAPI & ConvoysAPI & OrdersAPI;
+export type ControlCenterAPI = HealthAPI & Partial<ConvoysAPI & OrdersAPI & MailAPI>;
+export type LiveControlCenterAPI = HealthAPI & ConvoysAPI & OrdersAPI & MailAPI;
 
 const client = createClient<paths>({ baseUrl: "" });
 
@@ -80,6 +98,35 @@ export const api: LiveControlCenterAPI = {
       signal,
     });
     if (!response.ok || error || !data) throw new Error(`order output request failed with status ${response.status}`);
+    return data;
+  },
+  async getMailCount(signal) {
+    const { data, error, response } = await client.GET("/api/v1/mail/count", { signal });
+    if (!response.ok || error || !data) throw new ControlCenterAPIError("mail count request failed", response.status);
+    return data;
+  },
+  async listMail(status, cursor, limit = 50, signal) {
+    const { data, error, response } = await client.GET("/api/v1/mail", {
+      params: { query: { status, cursor, limit } },
+      signal,
+    });
+    if (!response.ok || error || !data) throw new ControlCenterAPIError("mail list request failed", response.status);
+    return data;
+  },
+  async getMail(id, rig, signal) {
+    const { data, error, response } = await client.GET("/api/v1/mail/{id}", {
+      params: { path: { id }, query: { rig } },
+      signal,
+    });
+    if (!response.ok || error || !data) throw new ControlCenterAPIError("mail detail request failed", response.status);
+    return data;
+  },
+  async getMailThread(idOrThreadID, rig, signal) {
+    const { data, error, response } = await client.GET("/api/v1/mail/{id}/thread", {
+      params: { path: { id: idOrThreadID }, query: { rig } },
+      signal,
+    });
+    if (!response.ok || error || !data) throw new ControlCenterAPIError("mail thread request failed", response.status);
     return data;
   },
 };

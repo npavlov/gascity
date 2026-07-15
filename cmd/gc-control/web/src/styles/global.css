@@ -42,3 +42,10 @@ body {
   min-height: 24rem;
   margin: var(--cc-space-0) auto;
 }
+
+.app-resource-summary {
+  display: flex;
+  justify-content: flex-end;
+  min-width: var(--cc-space-0);
+  margin-bottom: var(--cc-space-2);
+}

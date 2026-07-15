@@ -11,6 +11,10 @@ import type {
   ConvoySummary,
   ConvoysAPI,
   Health,
+  MailAPI,
+  MailMessage,
+  MailPage,
+  MailThread,
   Order,
   OrderList,
   OrderRunList,
@@ -18,7 +22,10 @@ import type {
 } from "@/lib/api";
 import type { EventSourceFactory, EventSourceLike } from "@/lib/events";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+});
 
 function fakeAPI(result: Health | Error | Promise<Health>): ControlCenterAPI {
   return {
@@ -90,6 +97,40 @@ function fullAPI(overrides: Partial<ControlCenterAPI> = {}): ControlCenterAPI {
   };
 }
 
+function mailMessage(id: string, subject: string, read = false): MailMessage {
+  return {
+    schema_version: 1,
+    id,
+    from: id === "mail-1" ? "mayor" : "worker",
+    to: "crew",
+    cc: [],
+    subject,
+    body: `${subject} body`,
+    created_at: "2026-07-15T10:00:00Z",
+    read,
+    thread_id: "thread-1",
+    rig: "taxdome",
+  };
+}
+
+function mailFacet(overrides: Partial<MailAPI> = {}): MailAPI {
+  const first = mailMessage("mail-1", "First mail");
+  const second = mailMessage("mail-2", "Second mail", true);
+  return {
+    getMailCount: vi.fn(async () => ({ schema_version: 1, total: 8, unread: 3, partial: false, partial_errors: [] })),
+    listMail: vi.fn(async (status): Promise<MailPage> => ({
+      schema_version: 1,
+      items: status === "unread" ? [first] : [first, second],
+      total: status === "unread" ? 3 : 8,
+      partial: false,
+      partial_errors: [],
+    })),
+    getMail: vi.fn(async (id) => (id === second.id ? second : first)),
+    getMailThread: vi.fn(async (): Promise<MailThread> => ({ schema_version: 1, items: [first, second], total: 2, partial: false, truncated: false, partial_errors: [] })),
+    ...overrides,
+  };
+}
+
 describe("App", () => {
   it("shows an accessible loading state while health is pending", () => {
     render(<App api={fakeAPI(new Promise<Health>(() => undefined))} />);
@@ -128,6 +169,82 @@ describe("App", () => {
     expect(screen.getByRole("tab", { name: "Convoys" })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByRole("tab", { name: "Orders" })).toBeVisible();
     expect(await screen.findByRole("heading", { name: "Feature one", level: 2 })).toBeVisible();
+  });
+
+  it("places Mail after Orders, shows city unread count, and preserves owned mail state across tabs", async () => {
+    const user = userEvent.setup();
+    const mail = mailFacet();
+    render(<App api={fullAPI(mail)} />);
+
+    expect(await screen.findByText("3 unread")).toBeVisible();
+    const tabs = screen.getAllByRole("tab");
+    expect(tabs.map((tab) => tab.textContent)).toEqual(["Convoys", "Orders", "Mail"]);
+
+    await user.click(screen.getByRole("tab", { name: "Mail" }));
+    expect(await screen.findByRole("button", { name: "Select mail First mail from mayor" })).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "All mail" }));
+    const second = await screen.findByRole("button", { name: "Select mail Second mail from worker" });
+    await user.click(second);
+    expect(second).toHaveAttribute("aria-pressed", "true");
+
+    await user.click(screen.getByRole("tab", { name: "Orders" }));
+    await user.click(screen.getByRole("tab", { name: "Mail" }));
+    expect(screen.getByRole("button", { name: "All mail" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "Select mail Second mail from worker" })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("never presents a partial or failed zero unread snapshot as authoritative", async () => {
+    const partialMail = mailFacet({
+      getMailCount: vi.fn(async () => ({ schema_version: 1, total: 0, unread: 0, partial: true, partial_errors: ["rig unavailable"] })),
+    });
+    const view = render(<App api={fullAPI(partialMail)} />);
+    expect(await screen.findByText("Unread partial")).toBeVisible();
+    expect(screen.queryByText("0 unread")).not.toBeInTheDocument();
+    view.unmount();
+
+    const failedMail = mailFacet({ getMailCount: vi.fn(async () => { throw new Error("offline"); }) });
+    render(<App api={fullAPI(failedMail)} />);
+    expect(await screen.findByText("Unread unavailable")).toBeVisible();
+    expect(screen.queryByText("0 unread")).not.toBeInTheDocument();
+  });
+
+  it("routes Mail invalidation, disconnect, and reconnect through the existing single feed", async () => {
+    class MailEventSource implements EventSourceLike {
+      listener: ((event: MessageEvent<string>) => void) | undefined;
+      onopen: ((event: Event) => void) | null = null;
+      onerror: ((event: Event) => void) | null = null;
+      addEventListener(_type: string, listener: (event: MessageEvent<string>) => void) { this.listener = listener; }
+      removeEventListener() { this.listener = undefined; }
+      close() { return undefined; }
+      emit() { this.listener?.(new MessageEvent("invalidate", { data: JSON.stringify({ resources: ["mail"], cursor: "mail-9" }) })); }
+      fail() { this.onerror?.(new Event("error")); }
+      open() { this.onopen?.(new Event("open")); }
+    }
+    const sources: MailEventSource[] = [];
+    const sourceFactory = () => {
+      const source = new MailEventSource();
+      sources.push(source);
+      return source;
+    };
+    const mail = mailFacet();
+    render(<App api={fullAPI(mail)} eventSourceFactory={sourceFactory} />);
+    expect(await screen.findByText("3 unread")).toBeVisible();
+    const initialCountCalls = vi.mocked(mail.getMailCount).mock.calls.length;
+    act(() => sources[0].emit());
+    await waitFor(() => expect(vi.mocked(mail.getMailCount).mock.calls.length).toBeGreaterThan(initialCountCalls));
+
+    vi.useFakeTimers();
+    act(() => sources[0].fail());
+    await act(async () => { await Promise.resolve(); });
+    expect(screen.getByText("3 unread · stale")).toBeVisible();
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
+    const beforeReconnect = vi.mocked(mail.getMailCount).mock.calls.length;
+    await act(async () => {
+      sources[1].open();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(vi.mocked(mail.getMailCount).mock.calls.length).toBeGreaterThan(beforeReconnect);
   });
 
   it("shows simultaneous convoy signals and hides percentage progress when total is zero", async () => {

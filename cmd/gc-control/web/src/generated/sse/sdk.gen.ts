@@ -2,7 +2,7 @@
 
 import type { Client, Options as Options2, TDataShape } from './client';
 import { client } from './client.gen';
-import type { GetApiV1ConvoysByIdBeadsData, GetApiV1ConvoysByIdBeadsErrors, GetApiV1ConvoysByIdBeadsResponses, GetApiV1ConvoysByIdData, GetApiV1ConvoysByIdErrors, GetApiV1ConvoysByIdResponses, GetApiV1ConvoysData, GetApiV1ConvoysErrors, GetApiV1ConvoysResponses, GetApiV1HealthData, GetApiV1HealthErrors, GetApiV1HealthResponses, GetApiV1OrdersData, GetApiV1OrdersErrors, GetApiV1OrdersHistoryByBeadIdData, GetApiV1OrdersHistoryByBeadIdErrors, GetApiV1OrdersHistoryByBeadIdResponses, GetApiV1OrdersHistoryData, GetApiV1OrdersHistoryErrors, GetApiV1OrdersHistoryResponses, GetApiV1OrdersResponses, StreamControlCenterEventsData, StreamControlCenterEventsErrors, StreamControlCenterEventsResponse, StreamControlCenterEventsResponses } from './types.gen';
+import type { GetApiV1ConvoysByIdBeadsData, GetApiV1ConvoysByIdBeadsErrors, GetApiV1ConvoysByIdBeadsResponses, GetApiV1ConvoysByIdData, GetApiV1ConvoysByIdErrors, GetApiV1ConvoysByIdResponses, GetApiV1ConvoysData, GetApiV1ConvoysErrors, GetApiV1ConvoysResponses, GetApiV1HealthData, GetApiV1HealthErrors, GetApiV1HealthResponses, GetApiV1MailByIdData, GetApiV1MailByIdErrors, GetApiV1MailByIdResponses, GetApiV1MailByIdThreadData, GetApiV1MailByIdThreadErrors, GetApiV1MailByIdThreadResponses, GetApiV1MailCountData, GetApiV1MailCountErrors, GetApiV1MailCountResponses, GetApiV1MailData, GetApiV1MailErrors, GetApiV1MailResponses, GetApiV1OrdersData, GetApiV1OrdersErrors, GetApiV1OrdersHistoryByBeadIdData, GetApiV1OrdersHistoryByBeadIdErrors, GetApiV1OrdersHistoryByBeadIdResponses, GetApiV1OrdersHistoryData, GetApiV1OrdersHistoryErrors, GetApiV1OrdersHistoryResponses, GetApiV1OrdersResponses, StreamControlCenterEventsData, StreamControlCenterEventsErrors, StreamControlCenterEventsResponse, StreamControlCenterEventsResponses } from './types.gen';
 
 export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends boolean = boolean, TResponse = unknown> = Options2<TData, ThrowOnError, TResponse> & {
     /**
@@ -44,6 +44,26 @@ export const streamControlCenterEvents = <ThrowOnError extends boolean = false>(
  * Get API v1 health
  */
 export const getApiV1Health = <ThrowOnError extends boolean = false>(options?: Options<GetApiV1HealthData, ThrowOnError>) => (options?.client ?? client).get<GetApiV1HealthResponses, GetApiV1HealthErrors, ThrowOnError>({ url: '/api/v1/health', ...options });
+
+/**
+ * Get API v1 mail
+ */
+export const getApiV1Mail = <ThrowOnError extends boolean = false>(options?: Options<GetApiV1MailData, ThrowOnError>) => (options?.client ?? client).get<GetApiV1MailResponses, GetApiV1MailErrors, ThrowOnError>({ url: '/api/v1/mail', ...options });
+
+/**
+ * Get API v1 mail count
+ */
+export const getApiV1MailCount = <ThrowOnError extends boolean = false>(options?: Options<GetApiV1MailCountData, ThrowOnError>) => (options?.client ?? client).get<GetApiV1MailCountResponses, GetApiV1MailCountErrors, ThrowOnError>({ url: '/api/v1/mail/count', ...options });
+
+/**
+ * Get API v1 mail by ID
+ */
+export const getApiV1MailById = <ThrowOnError extends boolean = false>(options: Options<GetApiV1MailByIdData, ThrowOnError>) => (options.client ?? client).get<GetApiV1MailByIdResponses, GetApiV1MailByIdErrors, ThrowOnError>({ url: '/api/v1/mail/{id}', ...options });
+
+/**
+ * Get API v1 mail by ID thread
+ */
+export const getApiV1MailByIdThread = <ThrowOnError extends boolean = false>(options: Options<GetApiV1MailByIdThreadData, ThrowOnError>) => (options.client ?? client).get<GetApiV1MailByIdThreadResponses, GetApiV1MailByIdThreadErrors, ThrowOnError>({ url: '/api/v1/mail/{id}/thread', ...options });
 
 /**
  * Get API v1 orders

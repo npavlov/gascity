@@ -15,6 +15,7 @@ import (
 
 	controlapi "github.com/gastownhall/gascity/internal/controlcenter/api"
 	"github.com/gastownhall/gascity/internal/controlcenter/gcstate"
+	"github.com/gastownhall/gascity/internal/controlcenter/mailbox"
 )
 
 const shutdownTimeout = 5 * time.Second
@@ -31,6 +32,7 @@ type SupervisorBundle struct {
 	Ping   func(context.Context) error
 	State  *gcstate.Service
 	Events *gcstate.Hub
+	Mail   mailbox.Reader
 }
 
 // SupervisorFactory constructs all Supervisor edges from one normalized
@@ -65,7 +67,7 @@ func NewApp(cfg Config, deps Dependencies) (*App, error) {
 	if err != nil {
 		return nil, fmt.Errorf("control center: create Supervisor dependencies: %w", err)
 	}
-	if bundle.Ping == nil || bundle.State == nil || bundle.Events == nil {
+	if bundle.Ping == nil || bundle.State == nil || bundle.Events == nil || bundle.Mail == nil {
 		return nil, fmt.Errorf("control center: incomplete Supervisor dependency bundle")
 	}
 	staticHandler, err := newStaticHandler(deps.StaticFS)
@@ -79,6 +81,7 @@ func NewApp(cfg Config, deps Dependencies) (*App, error) {
 		SupervisorPing: bundle.Ping,
 		State:          bundle.State,
 		Events:         bundle.Events,
+		Mail:           bundle.Mail,
 	})
 	mux.Handle("/", staticHandler)
 

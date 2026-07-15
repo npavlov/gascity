@@ -105,6 +105,48 @@ export type Invalidation = {
     resources: Array<string> | null;
 };
 
+export type MailCount = {
+    partial: boolean;
+    partial_errors: Array<string> | null;
+    schema_version: number;
+    total: number;
+    unread: number;
+};
+
+export type MailMessage = {
+    body: string;
+    cc: Array<string> | null;
+    created_at: string;
+    from: string;
+    id: string;
+    priority?: number;
+    read: boolean;
+    reply_to?: string;
+    rig?: string;
+    schema_version: number;
+    subject: string;
+    thread_id?: string;
+    to: string;
+};
+
+export type MailPage = {
+    items: Array<MailMessage> | null;
+    next_cursor?: string;
+    partial: boolean;
+    partial_errors: Array<string> | null;
+    schema_version: number;
+    total: number;
+};
+
+export type MailThread = {
+    items: Array<MailMessage> | null;
+    partial: boolean;
+    partial_errors: Array<string> | null;
+    schema_version: number;
+    total: number;
+    truncated: boolean;
+};
+
 export type OrderRunOutput = {
     bead_id: string;
     created_at: string;
@@ -399,6 +441,139 @@ export type GetApiV1HealthResponses = {
 };
 
 export type GetApiV1HealthResponse = GetApiV1HealthResponses[keyof GetApiV1HealthResponses];
+
+export type GetApiV1MailData = {
+    body?: never;
+    path?: never;
+    query?: {
+        /**
+         * Inbox filter.
+         */
+        status?: 'unread' | 'all';
+        /**
+         * Opaque Supervisor page cursor.
+         */
+        cursor?: string;
+        /**
+         * Maximum messages in this page.
+         */
+        limit?: number;
+    };
+    url: '/api/v1/mail';
+};
+
+export type GetApiV1MailErrors = {
+    /**
+     * Error
+     */
+    default: ErrorModel;
+};
+
+export type GetApiV1MailError = GetApiV1MailErrors[keyof GetApiV1MailErrors];
+
+export type GetApiV1MailResponses = {
+    /**
+     * OK
+     */
+    200: MailPage;
+};
+
+export type GetApiV1MailResponse = GetApiV1MailResponses[keyof GetApiV1MailResponses];
+
+export type GetApiV1MailCountData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/mail/count';
+};
+
+export type GetApiV1MailCountErrors = {
+    /**
+     * Error
+     */
+    default: ErrorModel;
+};
+
+export type GetApiV1MailCountError = GetApiV1MailCountErrors[keyof GetApiV1MailCountErrors];
+
+export type GetApiV1MailCountResponses = {
+    /**
+     * OK
+     */
+    200: MailCount;
+};
+
+export type GetApiV1MailCountResponse = GetApiV1MailCountResponses[keyof GetApiV1MailCountResponses];
+
+export type GetApiV1MailByIdData = {
+    body?: never;
+    path: {
+        /**
+         * Mail message or thread ID.
+         */
+        id: string;
+    };
+    query?: {
+        /**
+         * Opaque provider lookup hint.
+         */
+        rig?: string;
+    };
+    url: '/api/v1/mail/{id}';
+};
+
+export type GetApiV1MailByIdErrors = {
+    /**
+     * Error
+     */
+    default: ErrorModel;
+};
+
+export type GetApiV1MailByIdError = GetApiV1MailByIdErrors[keyof GetApiV1MailByIdErrors];
+
+export type GetApiV1MailByIdResponses = {
+    /**
+     * OK
+     */
+    200: MailMessage;
+};
+
+export type GetApiV1MailByIdResponse = GetApiV1MailByIdResponses[keyof GetApiV1MailByIdResponses];
+
+export type GetApiV1MailByIdThreadData = {
+    body?: never;
+    path: {
+        /**
+         * Mail message or thread ID.
+         */
+        id: string;
+    };
+    query?: {
+        /**
+         * Opaque provider lookup hint.
+         */
+        rig?: string;
+    };
+    url: '/api/v1/mail/{id}/thread';
+};
+
+export type GetApiV1MailByIdThreadErrors = {
+    /**
+     * Error
+     */
+    default: ErrorModel;
+};
+
+export type GetApiV1MailByIdThreadError = GetApiV1MailByIdThreadErrors[keyof GetApiV1MailByIdThreadErrors];
+
+export type GetApiV1MailByIdThreadResponses = {
+    /**
+     * OK
+     */
+    200: MailThread;
+};
+
+export type GetApiV1MailByIdThreadResponse = GetApiV1MailByIdThreadResponses[keyof GetApiV1MailByIdThreadResponses];
 
 export type GetApiV1OrdersData = {
     body?: never;

@@ -192,6 +192,9 @@ func EventResources(event EventEnvelope) []string {
 	if strings.HasPrefix(event.Type, "order.") {
 		resources["orders"] = true
 	}
+	if strings.HasPrefix(event.Type, "mail.") {
+		resources["mail"] = true
+	}
 	if strings.HasPrefix(event.Type, "bead.") || event.Workflow != nil {
 		resources["convoys"] = true
 		resources["orders"] = true

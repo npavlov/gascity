@@ -164,6 +164,91 @@ func TestEventResourcesMapping(t *testing.T) {
 	}
 }
 
+func TestEventResourcesMapEveryMailEventAndUnknownMail(t *testing.T) {
+	for _, eventType := range []string{
+		"mail.sent",
+		"mail.read",
+		"mail.archived",
+		"mail.marked_read",
+		"mail.marked_unread",
+		"mail.replied",
+		"mail.deleted",
+		"mail.future_event",
+	} {
+		t.Run(eventType, func(t *testing.T) {
+			if got := EventResources(EventEnvelope{Type: eventType}); !reflect.DeepEqual(got, []string{"mail"}) {
+				t.Fatalf("EventResources(%q) = %v, want [mail]", eventType, got)
+			}
+		})
+	}
+	if got := EventResources(EventEnvelope{Type: "email.sent"}); got != nil {
+		t.Fatalf("unrelated event resources = %v, want nil", got)
+	}
+}
+
+func TestHubMailInvalidationCoalescesWithOtherResourcesUsingOneStream(t *testing.T) {
+	stream := newScriptThenBlockStream([]EventEnvelope{
+		{Seq: "21", Type: "mail.sent"},
+		{Seq: "22", Type: "bead.updated"},
+	})
+	source := &scriptedEventSource{streams: []EventStream{stream}}
+	hub, err := NewHub(source)
+	if err != nil {
+		t.Fatalf("NewHub: %v", err)
+	}
+	subscriber := hub.Subscribe()
+	defer subscriber.Close()
+	if err := hub.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer hub.Stop()
+	select {
+	case <-stream.blocking:
+	case <-time.After(time.Second):
+		t.Fatal("hub did not consume scripted mail events")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	got, err := subscriber.Next(ctx)
+	if err != nil {
+		t.Fatalf("Next: %v", err)
+	}
+	if !reflect.DeepEqual(got.Resources, []string{"convoys", "mail", "orders"}) || got.Cursor != "22" {
+		t.Fatalf("coalesced mail invalidation = %#v", got)
+	}
+	if source.CallCount() != 1 {
+		t.Fatalf("upstream stream opens = %d, want exactly one", source.CallCount())
+	}
+}
+
+func TestHubMailEventResumesCursorAndCancellationStopsReconnect(t *testing.T) {
+	source := &scriptedEventSource{streams: []EventStream{
+		&sliceEventStream{events: []EventEnvelope{{Seq: "31", Type: "mail.marked_read"}}, finalErr: io.EOF},
+		&blockingEventStream{},
+	}}
+	hub, err := NewHub(source, WithHubSleep(func(context.Context, time.Duration) error { return nil }))
+	if err != nil {
+		t.Fatalf("NewHub: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := hub.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	waitFor(t, func() bool { return source.CallCount() >= 2 })
+	cancel()
+	hub.Stop()
+
+	if got := source.AfterSeqs(); len(got) < 2 || !reflect.DeepEqual(got[:2], []string{"", "31"}) {
+		t.Fatalf("resume cursors = %v, want empty then 31", got)
+	}
+	calls := source.CallCount()
+	time.Sleep(10 * time.Millisecond)
+	if source.CallCount() != calls {
+		t.Fatalf("stream reopened after cancellation: before=%d after=%d", calls, source.CallCount())
+	}
+}
+
 func TestHubCoalescesBurstIntoUnionWithNewestCursor(t *testing.T) {
 	hub, err := NewHub(&scriptedEventSource{})
 	if err != nil {
@@ -408,6 +493,29 @@ type sliceEventStream struct {
 	finalErr error
 	closed   bool
 }
+
+type scriptThenBlockStream struct {
+	events   []EventEnvelope
+	block    *blockingEventStream
+	blocking chan struct{}
+	once     sync.Once
+}
+
+func newScriptThenBlockStream(events []EventEnvelope) *scriptThenBlockStream {
+	return &scriptThenBlockStream{events: events, block: &blockingEventStream{}, blocking: make(chan struct{})}
+}
+
+func (s *scriptThenBlockStream) Recv() (EventEnvelope, error) {
+	if len(s.events) > 0 {
+		event := s.events[0]
+		s.events = s.events[1:]
+		return event, nil
+	}
+	s.once.Do(func() { close(s.blocking) })
+	return s.block.Recv()
+}
+
+func (s *scriptThenBlockStream) Close() error { return s.block.Close() }
 
 func (s *sliceEventStream) Recv() (EventEnvelope, error) {
 	if len(s.events) == 0 {

@@ -10,6 +10,7 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humago"
 	"github.com/gastownhall/gascity/internal/controlcenter/gcstate"
+	"github.com/gastownhall/gascity/internal/controlcenter/mailbox"
 )
 
 // Options supplies the runtime dependencies used by registered handlers.
@@ -18,6 +19,7 @@ type Options struct {
 	SupervisorPing func(context.Context) error
 	State          *gcstate.Service
 	Events         *gcstate.Hub
+	Mail           mailbox.Reader
 	eventKeepalive time.Duration
 }
 
@@ -33,6 +35,7 @@ func Register(mux *http.ServeMux, opts Options) huma.API {
 	registerConvoys(api, opts)
 	registerBeads(api, opts)
 	registerOrders(api, opts)
+	registerMail(api, opts)
 	registerEvents(api, opts)
 	return api
 }

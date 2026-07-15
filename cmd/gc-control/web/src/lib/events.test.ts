@@ -124,7 +124,7 @@ describe("createInvalidationFeed", () => {
     stop();
   });
 
-  it("ignores malformed and unrelated invalidations", () => {
+  it("decodes Mail and ignores malformed or unrelated invalidations", () => {
     const source = new FakeEventSource();
     const invalidations = vi.fn();
     const stop = createInvalidationFeed({ factory: () => source, onInvalidate: invalidations, onStale: vi.fn() });
@@ -133,7 +133,8 @@ describe("createInvalidationFeed", () => {
     source.emit("invalidate", { resources: ["convoys"], cursor: "" });
     source.emit("invalidate", { resources: null, cursor: "10" });
     source.emitRaw("invalidate", "{");
-    expect(invalidations).not.toHaveBeenCalled();
+    expect(invalidations).toHaveBeenCalledOnce();
+    expect(invalidations).toHaveBeenCalledWith(["mail"]);
     stop();
   });
 
