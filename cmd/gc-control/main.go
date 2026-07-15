@@ -5,6 +5,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
@@ -18,6 +19,11 @@ import (
 
 const supervisorTimeout = 3 * time.Second
 
+type runDependencies struct {
+	webFS             func() (fs.FS, error)
+	newSupervisorPing func(string, *http.Client) (func(context.Context) error, error)
+}
+
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	err := run(ctx, os.Args[1:])
@@ -29,21 +35,29 @@ func main() {
 }
 
 func run(ctx context.Context, args []string) error {
+	return runWithDependencies(ctx, args, runDependencies{
+		webFS:             embeddedWebFS,
+		newSupervisorPing: newSupervisorPing,
+	})
+}
+
+func runWithDependencies(ctx context.Context, args []string, deps runDependencies) error {
 	cfg, err := parseConfig(args)
 	if err != nil {
 		return err
 	}
-	web, err := embeddedWebFS()
-	if err != nil {
-		return err
+	if deps.webFS == nil || deps.newSupervisorPing == nil {
+		return fmt.Errorf("control center: runtime dependencies are required")
 	}
-	ping, err := newSupervisorPing(cfg.SupervisorURL, nil)
+	web, err := deps.webFS()
 	if err != nil {
 		return err
 	}
 	app, err := controlcenter.NewApp(cfg, controlcenter.Dependencies{
-		StaticFS:       web,
-		SupervisorPing: ping,
+		StaticFS: web,
+		SupervisorPingFactory: func(baseURL string) (func(context.Context) error, error) {
+			return deps.newSupervisorPing(baseURL, nil)
+		},
 	})
 	if err != nil {
 		return err

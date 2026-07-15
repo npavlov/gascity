@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/fstest"
 )
 
 func TestParseConfigMapsExplicitFlagsWithoutChangingIdentity(t *testing.T) {
@@ -115,6 +116,38 @@ func TestEmbeddedWebFSContainsProductionIndex(t *testing.T) {
 	}
 }
 
+func TestRunBuildsSupervisorPingFromNormalizedURL(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	var gotURL string
+	err := runWithDependencies(ctx, []string{
+		"--bind", "127.0.0.1:0",
+		"--supervisor-url", "  http://127.0.0.1:9011/  ",
+		"--city", "taxdome",
+		"--gc", "/custom/bin/gc",
+		"--pack", "gascity",
+		"--mayor-identity", "taxdome/lead.operator",
+		"--assistant-template", "taxdome/workers.convoy_assistant",
+	}, runDependencies{
+		webFS: func() (fs.FS, error) {
+			return fstest.MapFS{
+				"index.html": &fstest.MapFile{Data: []byte("<!doctype html><main id=\"root\"></main>")},
+			}, nil
+		},
+		newSupervisorPing: func(baseURL string, _ *http.Client) (func(context.Context) error, error) {
+			gotURL = baseURL
+			return func(context.Context) error { return nil }, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runWithDependencies: %v", err)
+	}
+	if gotURL != "http://127.0.0.1:9011" {
+		t.Fatalf("Supervisor URL = %q, want normalized URL", gotURL)
+	}
+}
+
 func TestMakefileKeepsControlCenterBuildOrderAndOutput(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("..", "..", "Makefile"))
 	if err != nil {
@@ -125,8 +158,8 @@ func TestMakefileKeepsControlCenterBuildOrderAndOutput(t *testing.T) {
 		"control-center-web-install:",
 		"control-center-gen: control-center-web-install",
 		"control-center-build: control-center-gen",
-		"control-center-test: control-center-gen",
-		"control-center-check: control-center-build control-center-test",
+		"control-center-test: control-center-build",
+		"control-center-check: control-center-test",
 		"go build -o $(BUILD_DIR)/gc-control ./cmd/gc-control",
 		"rm -f $(BUILD_DIR)/$(BINARY) $(BUILD_DIR)/gc-control",
 	} {

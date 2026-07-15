@@ -19,8 +19,9 @@ const shutdownTimeout = 5 * time.Second
 
 // Dependencies contains the application edges supplied by the executable.
 type Dependencies struct {
-	StaticFS       fs.FS
-	SupervisorPing func(context.Context) error
+	StaticFS              fs.FS
+	SupervisorPing        func(context.Context) error
+	SupervisorPingFactory func(string) (func(context.Context) error, error)
 }
 
 // App is one configured Control Center HTTP application.
@@ -42,6 +43,16 @@ func NewApp(cfg Config, deps Dependencies) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
+	if deps.SupervisorPing != nil && deps.SupervisorPingFactory != nil {
+		return nil, fmt.Errorf("control center: provide either SupervisorPing or SupervisorPingFactory, not both")
+	}
+	supervisorPing := deps.SupervisorPing
+	if deps.SupervisorPingFactory != nil {
+		supervisorPing, err = deps.SupervisorPingFactory(normalized.SupervisorURL)
+		if err != nil {
+			return nil, fmt.Errorf("control center: create Supervisor ping: %w", err)
+		}
+	}
 	staticHandler, err := newStaticHandler(deps.StaticFS)
 	if err != nil {
 		return nil, err
@@ -50,7 +61,7 @@ func NewApp(cfg Config, deps Dependencies) (*App, error) {
 	mux := http.NewServeMux()
 	controlapi.Register(mux, controlapi.Options{
 		CityName:       normalized.CityName,
-		SupervisorPing: deps.SupervisorPing,
+		SupervisorPing: supervisorPing,
 	})
 	mux.Handle("/", staticHandler)
 
@@ -111,6 +122,14 @@ func newStaticHandler(staticFS fs.FS) (http.Handler, error) {
 	files := http.FileServer(http.FS(staticFS))
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			http.NotFound(w, r)
+			return
+		}
+		if isControlReservedPath(r.URL.Path) {
+			http.NotFound(w, r)
+			return
+		}
 		path := strings.TrimPrefix(r.URL.Path, "/")
 		if path == "" || path == "index.html" {
 			serveIndex(w, index)
@@ -120,7 +139,7 @@ func newStaticHandler(staticFS fs.FS) (http.Handler, error) {
 			files.ServeHTTP(w, r)
 			return
 		}
-		if isReservedPath(r.URL.Path) || (r.Method != http.MethodGet && r.Method != http.MethodHead) {
+		if isAssetPath(r.URL.Path) {
 			http.NotFound(w, r)
 			return
 		}
@@ -134,13 +153,17 @@ func serveIndex(w http.ResponseWriter, index []byte) {
 	_, _ = w.Write(index)
 }
 
-func isReservedPath(path string) bool {
-	for _, prefix := range []string{"/api", "/ws", "/assets"} {
+func isControlReservedPath(path string) bool {
+	for _, prefix := range []string{"/api", "/ws"} {
 		if path == prefix || strings.HasPrefix(path, prefix+"/") {
 			return true
 		}
 	}
 	return strings.HasPrefix(path, "/openapi")
+}
+
+func isAssetPath(path string) bool {
+	return path == "/assets" || strings.HasPrefix(path, "/assets/")
 }
 
 func hostGuard(next http.Handler) http.Handler {

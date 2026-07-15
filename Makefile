@@ -660,12 +660,12 @@ control-center-build: control-center-gen
 	go build -o $(BUILD_DIR)/gc-control ./cmd/gc-control
 
 ## control-center-test: run the focused Go and React suites against generated clients
-control-center-test: control-center-gen
+control-center-test: control-center-build
 	$(TEST_ENV) go test ./internal/controlcenter/... ./cmd/gc-control/...
 	cd cmd/gc-control/web && npm test
 
 ## control-center-check: run the complete standalone application quality gate
-control-center-check: control-center-build control-center-test
+control-center-check: control-center-test
 	cd cmd/gc-control/web && npm run typecheck
 
 ## dashboard-dev: Vite dev server (HMR) for SPA iteration
