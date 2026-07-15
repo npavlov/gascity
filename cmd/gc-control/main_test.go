@@ -3,15 +3,28 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"testing/fstest"
+	"time"
+
+	"github.com/gastownhall/gascity/internal/api/genclient"
+	"github.com/gastownhall/gascity/internal/controlcenter"
+	"github.com/gastownhall/gascity/internal/controlcenter/gcstate"
 )
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return fn(request)
+}
 
 func TestParseConfigMapsExplicitFlagsWithoutChangingIdentity(t *testing.T) {
 	cfg, err := parseConfig([]string{
@@ -87,11 +100,11 @@ func TestSupervisorPingRequiresTypedSuccessResponse(t *testing.T) {
 			}))
 			defer server.Close()
 
-			ping, err := newSupervisorPing(server.URL, server.Client())
+			bundle, err := newSupervisorBundle(server.URL, "taxdome", server.Client())
 			if err != nil {
-				t.Fatalf("newSupervisorPing: %v", err)
+				t.Fatalf("newSupervisorBundle: %v", err)
 			}
-			err = ping(context.Background())
+			err = bundle.Ping(context.Background())
 			if tt.ok && err != nil {
 				t.Fatalf("ping: %v", err)
 			}
@@ -100,6 +113,119 @@ func TestSupervisorPingRequiresTypedSuccessResponse(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSupervisorClientSharesOneTypedAndRawClientWithoutWholeResponseTimeout(t *testing.T) {
+	typed, err := newSupervisorClient("http://127.0.0.1:8372", nil)
+	if err != nil {
+		t.Fatalf("newSupervisorClient: %v", err)
+	}
+	underlying, ok := typed.ClientInterface.(*genclient.Client)
+	if !ok {
+		t.Fatalf("embedded raw facet = %T, want *genclient.Client", typed.ClientInterface)
+	}
+	httpClient, ok := underlying.Client.(*http.Client)
+	if !ok {
+		t.Fatalf("generated client doer = %T, want *http.Client", underlying.Client)
+	}
+	if httpClient.Timeout != 0 {
+		t.Fatalf("http.Client.Timeout = %s, want no whole-response timeout", httpClient.Timeout)
+	}
+	var responses gcstate.SupervisorResponses = typed
+	var raw gcstate.RawEventClient = typed.ClientInterface
+	if raw != underlying {
+		t.Fatalf("typed/raw facets do not share one concrete generated client: typed=%T raw=%T", responses, raw)
+	}
+}
+
+func TestSupervisorBundleBoundsOrdinaryHealthAndStateReads(t *testing.T) {
+	deadlines := make([]time.Duration, 0, 5)
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		deadline, ok := request.Context().Deadline()
+		if !ok {
+			return nil, fmt.Errorf("%s has no context deadline", request.URL.Path)
+		}
+		deadlines = append(deadlines, time.Until(deadline))
+		return jsonResponse(request, `{}`), nil
+	})}
+	bundle, err := newSupervisorBundle("http://supervisor.test", "taxdome", client)
+	if err != nil {
+		t.Fatalf("newSupervisorBundle: %v", err)
+	}
+	if err := bundle.Ping(context.Background()); err != nil {
+		t.Fatalf("Ping: %v", err)
+	}
+	_, _ = bundle.State.ListConvoys(context.Background())
+	if len(deadlines) < 5 {
+		t.Fatalf("observed %d bounded calls, want health plus state reads", len(deadlines))
+	}
+	for index, remaining := range deadlines {
+		if remaining < 2*time.Second || remaining > supervisorTimeout+500*time.Millisecond {
+			t.Errorf("deadline %d remaining = %s, want approximately %s", index, remaining, supervisorTimeout)
+		}
+	}
+}
+
+func TestRawSupervisorStreamSurvivesBeyondOrdinaryReadDeadlineUntilContextCancel(t *testing.T) {
+	reader, writer := io.Pipe()
+	closed := make(chan struct{})
+	body := &notifyingReadCloser{Reader: reader, closed: closed}
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if _, hasDeadline := request.Context().Deadline(); hasDeadline {
+			return nil, fmt.Errorf("raw SSE request unexpectedly has a deadline")
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: body, Request: request}, nil
+	})}
+	typed, err := newSupervisorClient("http://supervisor.test", client)
+	if err != nil {
+		t.Fatalf("newSupervisorClient: %v", err)
+	}
+	stateClient, err := gcstate.NewClient("taxdome", typed, typed.ClientInterface)
+	if err != nil {
+		t.Fatalf("gcstate.NewClient: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	stream, err := stateClient.StreamEvents(ctx, "")
+	if err != nil {
+		cancel()
+		t.Fatalf("StreamEvents: %v", err)
+	}
+	defer func() { _ = stream.Close() }()
+	timer := time.NewTimer(supervisorTimeout + 100*time.Millisecond)
+	select {
+	case <-closed:
+		timer.Stop()
+		cancel()
+		t.Fatal("raw SSE body closed at the ordinary read deadline")
+	case <-timer.C:
+	}
+	cancel()
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatal("canceling the stream context did not close the raw body")
+	}
+	_ = writer.Close()
+}
+
+func jsonResponse(request *http.Request, body string) *http.Response {
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Request:    request,
+	}
+}
+
+type notifyingReadCloser struct {
+	io.Reader
+	once   sync.Once
+	closed chan struct{}
+}
+
+func (body *notifyingReadCloser) Close() error {
+	body.once.Do(func() { close(body.closed) })
+	return nil
 }
 
 func TestEmbeddedWebFSContainsProductionIndex(t *testing.T) {
@@ -135,9 +261,11 @@ func TestRunBuildsSupervisorPingFromNormalizedURL(t *testing.T) {
 				"index.html": &fstest.MapFile{Data: []byte("<!doctype html><main id=\"root\"></main>")},
 			}, nil
 		},
-		newSupervisorPing: func(baseURL string, _ *http.Client) (func(context.Context) error, error) {
+		newSupervisor: func(baseURL, cityName string, _ *http.Client) (controlcenter.SupervisorBundle, error) {
 			gotURL = baseURL
-			return func(context.Context) error { return nil }, nil
+			return newSupervisorBundle(baseURL, cityName, &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+				return nil, context.Canceled
+			})})
 		},
 	})
 	if err != nil {
@@ -161,14 +289,16 @@ func TestRunWithDependenciesRejectsMissingRuntimeEdges(t *testing.T) {
 	validWebFS := func() (fs.FS, error) {
 		return fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte("<!doctype html>")}}, nil
 	}
-	validPingFactory := func(string, *http.Client) (func(context.Context) error, error) {
-		return func(context.Context) error { return nil }, nil
+	validSupervisorFactory := func(baseURL, cityName string, _ *http.Client) (controlcenter.SupervisorBundle, error) {
+		return newSupervisorBundle(baseURL, cityName, &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return nil, context.Canceled
+		})})
 	}
 	for _, tt := range []struct {
 		name string
 		deps runDependencies
 	}{
-		{name: "missing web filesystem", deps: runDependencies{newSupervisorPing: validPingFactory}},
+		{name: "missing web filesystem", deps: runDependencies{newSupervisor: validSupervisorFactory}},
 		{name: "missing Supervisor factory", deps: runDependencies{webFS: validWebFS}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

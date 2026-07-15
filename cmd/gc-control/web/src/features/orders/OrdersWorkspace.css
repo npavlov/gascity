@@ -1,0 +1,19 @@
+.order-definition,
+.order-run {
+  display: flex;
+  gap: var(--cc-space-3);
+  align-items: center;
+  justify-content: space-between;
+}
+
+.order-run,
+.order-output {
+  padding: var(--cc-space-3);
+  border: var(--cc-size-border-default) solid var(--cc-color-border-subtle);
+  border-radius: var(--cc-radius-md);
+}
+
+.order-output {
+  overflow-wrap: anywhere;
+  background: var(--cc-color-neutral-surface);
+}

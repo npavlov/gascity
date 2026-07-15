@@ -15,13 +15,14 @@ import (
 
 	"github.com/gastownhall/gascity/internal/api/genclient"
 	"github.com/gastownhall/gascity/internal/controlcenter"
+	"github.com/gastownhall/gascity/internal/controlcenter/gcstate"
 )
 
 const supervisorTimeout = 3 * time.Second
 
 type runDependencies struct {
-	webFS             func() (fs.FS, error)
-	newSupervisorPing func(string, *http.Client) (func(context.Context) error, error)
+	webFS         func() (fs.FS, error)
+	newSupervisor func(string, string, *http.Client) (controlcenter.SupervisorBundle, error)
 }
 
 func main() {
@@ -36,8 +37,8 @@ func main() {
 
 func run(ctx context.Context, args []string) error {
 	return runWithDependencies(ctx, args, runDependencies{
-		webFS:             embeddedWebFS,
-		newSupervisorPing: newSupervisorPing,
+		webFS:         embeddedWebFS,
+		newSupervisor: newSupervisorBundle,
 	})
 }
 
@@ -46,7 +47,7 @@ func runWithDependencies(ctx context.Context, args []string, deps runDependencie
 	if err != nil {
 		return err
 	}
-	if deps.webFS == nil || deps.newSupervisorPing == nil {
+	if deps.webFS == nil || deps.newSupervisor == nil {
 		return fmt.Errorf("control center: runtime dependencies are required")
 	}
 	web, err := deps.webFS()
@@ -55,8 +56,8 @@ func runWithDependencies(ctx context.Context, args []string, deps runDependencie
 	}
 	app, err := controlcenter.NewApp(cfg, controlcenter.Dependencies{
 		StaticFS: web,
-		SupervisorPingFactory: func(baseURL string) (func(context.Context) error, error) {
-			return deps.newSupervisorPing(baseURL, nil)
+		SupervisorFactory: func(baseURL, cityName string) (controlcenter.SupervisorBundle, error) {
+			return deps.newSupervisor(baseURL, cityName, nil)
 		},
 	})
 	if err != nil {
@@ -86,16 +87,38 @@ func parseConfig(args []string) (controlcenter.Config, error) {
 	return cfg, nil
 }
 
-func newSupervisorPing(baseURL string, client *http.Client) (func(context.Context) error, error) {
+func newSupervisorClient(baseURL string, client *http.Client) (*genclient.ClientWithResponses, error) {
 	if client == nil {
-		client = &http.Client{Timeout: supervisorTimeout}
+		client = &http.Client{}
 	}
 	typedClient, err := genclient.NewClientWithResponses(baseURL, genclient.WithHTTPClient(client))
 	if err != nil {
 		return nil, fmt.Errorf("control center: create Supervisor client: %w", err)
 	}
-	return func(ctx context.Context) error {
-		response, err := typedClient.GetHealthWithResponse(ctx)
+	return typedClient, nil
+}
+
+func newSupervisorBundle(baseURL, cityName string, client *http.Client) (controlcenter.SupervisorBundle, error) {
+	typedClient, err := newSupervisorClient(baseURL, client)
+	if err != nil {
+		return controlcenter.SupervisorBundle{}, err
+	}
+	stateClient, err := gcstate.NewClient(cityName, typedClient, typedClient.ClientInterface)
+	if err != nil {
+		return controlcenter.SupervisorBundle{}, fmt.Errorf("control center: create Supervisor state client: %w", err)
+	}
+	state, err := gcstate.NewService(stateClient)
+	if err != nil {
+		return controlcenter.SupervisorBundle{}, fmt.Errorf("control center: create Supervisor state service: %w", err)
+	}
+	events, err := gcstate.NewHub(stateClient)
+	if err != nil {
+		return controlcenter.SupervisorBundle{}, fmt.Errorf("control center: create Supervisor event hub: %w", err)
+	}
+	ping := func(ctx context.Context) error {
+		callCtx, cancel := context.WithTimeout(ctx, supervisorTimeout)
+		defer cancel()
+		response, err := typedClient.GetHealthWithResponse(callCtx)
 		if err != nil {
 			return fmt.Errorf("control center: get Supervisor health: %w", err)
 		}
@@ -103,5 +126,6 @@ func newSupervisorPing(baseURL string, client *http.Client) (func(context.Contex
 			return fmt.Errorf("control center: get Supervisor health: unexpected status %d", response.StatusCode())
 		}
 		return nil
-	}, nil
+	}
+	return controlcenter.SupervisorBundle{Ping: ping, State: state, Events: events}, nil
 }

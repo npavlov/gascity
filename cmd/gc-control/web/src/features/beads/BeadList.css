@@ -1,0 +1,9 @@
+.bead-list__row {
+  display: flex;
+  gap: var(--cc-space-3);
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--cc-space-2) var(--cc-space-3);
+  border: var(--cc-size-border-default) solid var(--cc-color-border-subtle);
+  border-radius: var(--cc-radius-md);
+}

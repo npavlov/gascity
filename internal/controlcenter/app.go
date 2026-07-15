@@ -10,24 +10,39 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	controlapi "github.com/gastownhall/gascity/internal/controlcenter/api"
+	"github.com/gastownhall/gascity/internal/controlcenter/gcstate"
 )
 
 const shutdownTimeout = 5 * time.Second
 
 // Dependencies contains the application edges supplied by the executable.
 type Dependencies struct {
-	StaticFS              fs.FS
-	SupervisorPing        func(context.Context) error
-	SupervisorPingFactory func(string) (func(context.Context) error, error)
+	StaticFS          fs.FS
+	SupervisorFactory SupervisorFactory
 }
+
+// SupervisorBundle is the one city-scoped Supervisor dependency graph shared
+// by health, authoritative reads, and the event hub.
+type SupervisorBundle struct {
+	Ping   func(context.Context) error
+	State  *gcstate.Service
+	Events *gcstate.Hub
+}
+
+// SupervisorFactory constructs all Supervisor edges from one normalized
+// endpoint and city identity.
+type SupervisorFactory func(supervisorURL, cityName string) (SupervisorBundle, error)
 
 // App is one configured Control Center HTTP application.
 type App struct {
 	cfg     Config
 	handler http.Handler
+	events  *gcstate.Hub
+	serve   func(*http.Server, net.Listener) error
 }
 
 type problemBody struct {
@@ -43,18 +58,15 @@ func NewApp(cfg Config, deps Dependencies) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	if deps.SupervisorPing != nil && deps.SupervisorPingFactory != nil {
-		return nil, fmt.Errorf("control center: provide either SupervisorPing or SupervisorPingFactory, not both")
+	if deps.SupervisorFactory == nil {
+		return nil, fmt.Errorf("control center: Supervisor factory is required")
 	}
-	supervisorPing := deps.SupervisorPing
-	if deps.SupervisorPingFactory != nil {
-		supervisorPing, err = deps.SupervisorPingFactory(normalized.SupervisorURL)
-		if err != nil {
-			return nil, fmt.Errorf("control center: create Supervisor ping: %w", err)
-		}
-		if supervisorPing == nil {
-			return nil, fmt.Errorf("control center: Supervisor ping factory returned nil")
-		}
+	bundle, err := deps.SupervisorFactory(normalized.SupervisorURL, normalized.CityName)
+	if err != nil {
+		return nil, fmt.Errorf("control center: create Supervisor dependencies: %w", err)
+	}
+	if bundle.Ping == nil || bundle.State == nil || bundle.Events == nil {
+		return nil, fmt.Errorf("control center: incomplete Supervisor dependency bundle")
 	}
 	staticHandler, err := newStaticHandler(deps.StaticFS)
 	if err != nil {
@@ -64,13 +76,17 @@ func NewApp(cfg Config, deps Dependencies) (*App, error) {
 	mux := http.NewServeMux()
 	controlapi.Register(mux, controlapi.Options{
 		CityName:       normalized.CityName,
-		SupervisorPing: supervisorPing,
+		SupervisorPing: bundle.Ping,
+		State:          bundle.State,
+		Events:         bundle.Events,
 	})
 	mux.Handle("/", staticHandler)
 
 	return &App{
 		cfg:     normalized,
 		handler: hostGuard(mux),
+		events:  bundle.Events,
+		serve:   func(server *http.Server, listener net.Listener) error { return server.Serve(listener) },
 	}, nil
 }
 
@@ -85,33 +101,56 @@ func (a *App) Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("control center: listen on %s: %w", a.cfg.BindAddress, err)
 	}
+	defer func() { _ = listener.Close() }()
 
 	server := &http.Server{
 		Handler:           a.handler,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
+	runCtx, cancelRun := context.WithCancel(ctx)
+	if err := a.events.Start(runCtx); err != nil {
+		cancelRun()
+		return fmt.Errorf("control center: start event hub: %w", err)
+	}
+	var stopOnce sync.Once
+	stopHub := func() {
+		stopOnce.Do(func() {
+			cancelRun()
+			a.events.Stop()
+		})
+	}
+	defer stopHub()
 	serveErr := make(chan error, 1)
 	go func() {
-		serveErr <- server.Serve(listener)
+		serveErr <- a.serve(server, listener)
 	}()
 
+	var primaryErr error
+	serveExited := false
 	select {
 	case err := <-serveErr:
-		if errors.Is(err, http.ErrServerClosed) && ctx.Err() != nil {
-			return nil
+		serveExited = true
+		if !errors.Is(err, http.ErrServerClosed) || ctx.Err() == nil {
+			primaryErr = fmt.Errorf("control center: serve HTTP: %w", err)
 		}
-		return fmt.Errorf("control center: serve HTTP: %w", err)
 	case <-ctx.Done():
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
-		defer cancel()
-		if err := server.Shutdown(shutdownCtx); err != nil {
-			return fmt.Errorf("control center: shut down HTTP server: %w", err)
-		}
-		if err := <-serveErr; err != nil && !errors.Is(err, http.ErrServerClosed) {
-			return fmt.Errorf("control center: serve HTTP during shutdown: %w", err)
-		}
-		return nil
 	}
+
+	// Stop the hub first so every local SSE handler is released before HTTP
+	// shutdown waits for active connections.
+	stopHub()
+	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), shutdownTimeout)
+	shutdownErr := server.Shutdown(shutdownCtx)
+	cancelShutdown()
+	if !serveExited {
+		if err := <-serveErr; err != nil && !errors.Is(err, http.ErrServerClosed) && primaryErr == nil {
+			primaryErr = fmt.Errorf("control center: serve HTTP during shutdown: %w", err)
+		}
+	}
+	if shutdownErr != nil && primaryErr == nil {
+		primaryErr = fmt.Errorf("control center: shut down HTTP server: %w", shutdownErr)
+	}
+	return primaryErr
 }
 
 func newStaticHandler(staticFS fs.FS) (http.Handler, error) {

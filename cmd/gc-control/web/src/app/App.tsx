@@ -1,6 +1,12 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import type { ControlCenterAPI, Health } from "@/lib/api";
+import { ConvoysWorkspace } from "@/features/convoys/ConvoysWorkspace";
+import type { ConvoysWorkspaceCache, ConvoysWorkspaceHandle } from "@/features/convoys/ConvoysWorkspace";
+import { OrdersWorkspace } from "@/features/orders/OrdersWorkspace";
+import type { OrdersWorkspaceCache, OrdersWorkspaceHandle } from "@/features/orders/OrdersWorkspace";
+import type { ControlCenterAPI, ConvoysAPI, Health, OrdersAPI } from "@/lib/api";
+import { createInvalidationFeed, createRefreshQueue } from "@/lib/events";
+import type { EventSourceFactory, LiveResource } from "@/lib/events";
 import {
   AlertIcon,
   CheckIcon,
@@ -9,6 +15,7 @@ import {
   Panel,
   Spinner,
   StatusSignal,
+  Tabs,
   Text,
   ToolFrame,
 } from "@/ui";
@@ -20,25 +27,123 @@ type AppState =
 
 export interface AppProps {
   api: ControlCenterAPI;
+  eventSourceFactory?: EventSourceFactory;
+  pollInterval?: number;
 }
 
-export function App({ api }: AppProps) {
+function convoyFacet(api: ControlCenterAPI): ConvoysAPI | null {
+  if (!api.listConvoys || !api.getConvoy || !api.listBeads) return null;
+  return { listConvoys: api.listConvoys, getConvoy: api.getConvoy, listBeads: api.listBeads };
+}
+
+function orderFacet(api: ControlCenterAPI): OrdersAPI | null {
+  if (!api.listOrders || !api.listOrderHistory || !api.getOrderRunOutput) return null;
+  return { listOrders: api.listOrders, listOrderHistory: api.listOrderHistory, getOrderRunOutput: api.getOrderRunOutput };
+}
+
+export function App({ api, eventSourceFactory, pollInterval = 10_000 }: AppProps) {
   const [state, setState] = useState<AppState>({ kind: "loading" });
+  const [activeTab, setActiveTab] = useState<LiveResource>("convoys");
+  const [selectedConvoyID, setSelectedConvoyID] = useState<string | null>(null);
+  const [selectedOrderName, setSelectedOrderName] = useState<string | null>(null);
+  const [stale, setStale] = useState<Record<LiveResource, boolean>>({ convoys: false, orders: false });
+  const convoyRef = useRef<ConvoysWorkspaceHandle>(null);
+  const orderRef = useRef<OrdersWorkspaceHandle>(null);
+  const [convoyCache, setConvoyCache] = useState<ConvoysWorkspaceCache>({ list: null, detail: null, items: [] });
+  const [orderCache, setOrderCache] = useState<OrdersWorkspaceCache>({ list: null, history: null, items: [] });
+  const activeTabRef = useRef(activeTab);
+  useEffect(() => {
+    activeTabRef.current = activeTab;
+  }, [activeTab]);
+  const convoys = useMemo(() => convoyFacet(api), [api]);
+  const orders = useMemo(() => orderFacet(api), [api]);
+  const setConvoysConfirmed = useCallback((confirmed: boolean) => {
+    setStale((current) => ({ ...current, convoys: !confirmed }));
+  }, []);
+  const setOrdersConfirmed = useCallback((confirmed: boolean) => {
+    setStale((current) => ({ ...current, orders: !confirmed }));
+  }, []);
+  const updateConvoyList = useCallback((list: ConvoysWorkspaceCache["list"], items: ConvoysWorkspaceCache["items"]) => {
+    setConvoyCache((current) => ({ ...current, list, items }));
+  }, []);
+  const updateConvoyDetail = useCallback((detail: ConvoysWorkspaceCache["detail"]) => {
+    setConvoyCache((current) => ({ ...current, detail }));
+  }, []);
+  const updateOrderList = useCallback((list: OrdersWorkspaceCache["list"], items: OrdersWorkspaceCache["items"]) => {
+    setOrderCache((current) => ({ ...current, list, items }));
+  }, []);
+  const updateOrderHistory = useCallback((history: OrdersWorkspaceCache["history"]) => {
+    setOrderCache((current) => ({ ...current, history }));
+  }, []);
 
   useEffect(() => {
-    let active = true;
+    const controller = new AbortController();
     api
-      .health()
+      .health(controller.signal)
       .then((health) => {
-        if (active) setState({ kind: "ready", health });
+        if (!controller.signal.aborted) setState({ kind: "ready", health });
       })
       .catch(() => {
-        if (active) setState({ kind: "error" });
+        if (!controller.signal.aborted) setState({ kind: "error" });
       });
-    return () => {
-      active = false;
-    };
+    return () => controller.abort();
   }, [api]);
+
+  const refreshResources = useCallback(async (resources: string[], signal: AbortSignal) => {
+    const results = await Promise.all(resources.map(async (resource) => {
+      if (resource === "convoys") {
+        return { resource, confirmed: convoyRef.current ? await convoyRef.current.refresh(signal) : false };
+      }
+      if (resource === "orders") {
+        return { resource, confirmed: orderRef.current ? await orderRef.current.refresh(signal) : false };
+      }
+      return { resource, confirmed: true };
+    }));
+    if (signal.aborted) return;
+    setStale((current) => {
+      const next = { ...current };
+      results.forEach(({ resource, confirmed }) => {
+        if (resource === "convoys" || resource === "orders") next[resource] = !confirmed;
+      });
+      return next;
+    });
+  }, []);
+
+  useEffect(() => {
+    if (state.kind !== "ready" || (!convoys && !orders)) return;
+    const queue = createRefreshQueue(refreshResources);
+    const stopFeed = eventSourceFactory || typeof EventSource !== "undefined"
+      ? createInvalidationFeed({
+          factory: eventSourceFactory,
+          onInvalidate: (resources) => {
+            setStale((current) => {
+              const next = { ...current };
+              resources.forEach((resource) => { next[resource] = true; });
+              return next;
+            });
+            queue.request(resources);
+          },
+          onReconnect: () => queue.request([activeTabRef.current]),
+          onStale: () => setStale({ convoys: true, orders: true }),
+        })
+      : () => undefined;
+    const refreshVisible = () => {
+      if (document.visibilityState === "visible") queue.request([activeTabRef.current]);
+    };
+    const interval = window.setInterval(refreshVisible, pollInterval);
+    window.addEventListener("focus", refreshVisible);
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") refreshVisible();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener("focus", refreshVisible);
+      document.removeEventListener("visibilitychange", onVisibility);
+      stopFeed();
+      queue.dispose();
+    };
+  }, [convoys, eventSourceFactory, orders, pollInterval, refreshResources, state.kind]);
 
   if (state.kind === "loading") {
     return (
@@ -59,6 +164,7 @@ export function App({ api }: AppProps) {
   }
 
   const connected = state.health.supervisor_reachable;
+  const noLiveFacets = !convoys && !orders;
   return (
     <ToolFrame
       header={
@@ -75,12 +181,56 @@ export function App({ api }: AppProps) {
         />
       }
     >
-      <Panel className="app-workspace" title="Control Center workspace">
-        <EmptyState
-          title="Operator workspace is ready"
-          description="Convoys, orders, Mayor, and mail will appear here as their projections connect."
+      {noLiveFacets ? (
+        <Panel className="app-workspace" title="Control Center workspace">
+          <EmptyState title="Operator workspace is ready" description="Live projection methods are not connected." />
+        </Panel>
+      ) : (
+        <Tabs
+          className="app-workspace"
+          aria-label="Control Center resources"
+          value={activeTab}
+          onValueChange={(value) => {
+            if (value === "convoys" || value === "orders") setActiveTab(value);
+          }}
+          items={[
+            {
+              id: "convoys",
+              label: "Convoys",
+              content: convoys ? (
+                <ConvoysWorkspace
+                  ref={convoyRef}
+                  api={convoys}
+                  cache={convoyCache}
+                  onListChange={updateConvoyList}
+                  onDetailChange={updateConvoyDetail}
+                  selectedID={selectedConvoyID}
+                  onSelectedIDChange={setSelectedConvoyID}
+                  onConfirmedChange={setConvoysConfirmed}
+                  externallyStale={stale.convoys}
+                />
+              ) : <Panel title="Convoys"><EmptyState title="Convoy projections unavailable" /></Panel>,
+            },
+            {
+              id: "orders",
+              label: "Orders",
+              content: orders ? (
+                <OrdersWorkspace
+                  ref={orderRef}
+                  api={orders}
+                  cache={orderCache}
+                  onListChange={updateOrderList}
+                  onHistoryChange={updateOrderHistory}
+                  selectedName={selectedOrderName}
+                  onSelectedNameChange={setSelectedOrderName}
+                  onConfirmedChange={setOrdersConfirmed}
+                  externallyStale={stale.orders}
+                />
+              ) : <Panel title="Orders"><EmptyState title="Order projections unavailable" /></Panel>,
+            },
+          ]}
         />
-      </Panel>
+      )}
     </ToolFrame>
   );
 }

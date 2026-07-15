@@ -1,0 +1,127 @@
+[
+  {
+    "name": "three of three",
+    "source": {
+      "convoy": {"id":"convoy-complete","title":"Complete","type":"convoy","status":"closed","metadata":{"work_dir":"/tmp/complete","parent_commit":"abc","feature_branch":"feature/complete","workflow_root":"wf-complete"}},
+      "children": [
+        {"id":"one","title":"One","type":"task","status":"closed","metadata":{"gc.step_ref":"one"}},
+        {"id":"two","title":"Two","type":"task","status":"tombstone","metadata":{"gc.step_ref":"two"}},
+        {"id":"three","title":"Three","type":"task","status":"closed","metadata":{"gc.step_ref":"three"}}
+      ],
+      "progress": {"closed":3,"total":3}
+    },
+    "workflow": {"workflow_id":"wf-complete","root_id":"root-complete"},
+    "progress": {"closed":3,"total":3},
+    "signal_keys": [], "active": [], "waiting": [], "complete": true, "problem_codes": []
+  },
+  {
+    "name": "two of three running",
+    "source": {
+      "convoy": {"id":"convoy-running","title":"Running","type":"convoy","status":"open","metadata":{"work_dir":"/tmp/running","parent_commit":"abc","feature_branch":"feature/running","workflow_root":"wf-running"}},
+      "children": [
+        {"id":"one","title":"One","type":"task","status":"closed","metadata":{"gc.step_ref":"one"}},
+        {"id":"two","title":"Two","type":"task","status":"closed","metadata":{"gc.step_ref":"two"}},
+        {"id":"three","title":"Frontend","type":"task","status":"in_progress","assignee":"worker","metadata":{"gc.step_ref":"frontend"}}
+      ],
+      "progress": {"closed":2,"total":3}
+    },
+    "sessions": {"items":[{"id":"worker","session_name":"worker-session","template":"dynamic/worker","state":"running","active_bead":"three","running":true,"attached":true}]},
+    "workflow": {"workflow_id":"wf-running","root_id":"root-running"},
+    "progress": {"closed":2,"total":3},
+    "signal_keys": ["running"], "active": ["frontend"], "waiting": [], "problem_codes": []
+  },
+  {
+    "name": "fail and running",
+    "source": {
+      "convoy": {"id":"convoy-fail","title":"Fail and run","type":"convoy","status":"open","metadata":{"work_dir":"/tmp/fail","parent_commit":"abc","feature_branch":"feature/fail","workflow_root":"wf-fail"}},
+      "children": [
+        {"id":"gate","title":"Gate","type":"task","status":"closed","metadata":{"gc.step_ref":"gate","gc.outcome":"fail","gc.failed_attempt":"2"}},
+        {"id":"dev","title":"Dev","type":"task","status":"in_progress","assignee":"session-1","metadata":{"gc.step_ref":"dev"}}
+      ],
+      "progress": {"closed":1,"total":2}
+    },
+    "sessions": {"items":[{"id":"session-1","session_name":"dynamic","template":"pack/worker","state":"running","active_bead":"dev","running":true}]},
+    "workflow": {"workflow_id":"wf-fail","root_id":"root-fail"},
+    "progress": {"closed":1,"total":2},
+    "signal_keys": ["fail_gate","running"], "active": ["dev"], "waiting": [], "problem_codes": []
+  },
+  {
+    "name": "waiting",
+    "source": {
+      "convoy": {"id":"convoy-wait","title":"Waiting","type":"convoy","status":"open","metadata":{"work_dir":"/tmp/wait","parent_commit":"abc","feature_branch":"feature/wait","workflow_root":"wf-wait"}},
+      "children": [{"id":"qa","title":"QA","type":"task","status":"open","blocked":true,"needs":["dev"],"metadata":{"gc.step_ref":"qa"}}],
+      "progress": {"closed":0,"total":1}
+    },
+    "workflow": {"workflow_id":"wf-wait","root_id":"root-wait"},
+    "progress": {"closed":0,"total":1},
+    "signal_keys": ["waiting"], "active": [], "waiting": ["qa"], "problem_codes": []
+  },
+  {
+    "name": "pending input",
+    "source": {
+      "convoy": {"id":"convoy-input","title":"Input","type":"convoy","status":"open","metadata":{"work_dir":"/tmp/input","parent_commit":"abc","feature_branch":"feature/input","workflow_root":"wf-input"}},
+      "children": [{"id":"dev","title":"Dev","type":"task","status":"in_progress","assignee":"worker","metadata":{"gc.step_ref":"dev"}}],
+      "progress": {"closed":0,"total":1}
+    },
+    "sessions": {"items":[{"id":"session-input","session_name":"worker","template":"pack/worker","state":"running","active_bead":"dev","running":true}]},
+    "pending": {"items":[{"session_id":"session-input","kind":"prompt-for-input"}]},
+    "workflow": {"workflow_id":"wf-input","root_id":"root-input"},
+    "progress": {"closed":0,"total":1},
+    "signal_keys": ["needs_input","running"], "active": ["dev"], "waiting": [], "problem_codes": []
+  },
+  {
+    "name": "awaiting review",
+    "source": {
+      "convoy": {"id":"convoy-review","title":"Review","type":"convoy","status":"open","metadata":{"work_dir":"/tmp/review","parent_commit":"abc","feature_branch":"feature/review","workflow_root":"wf-review"}},
+      "children": [{"id":"review","title":"Review","type":"task","status":"in_progress","metadata":{"gc.step_ref":"review","awaiting_review":"1"}}],
+      "progress": {"closed":0,"total":1}
+    },
+    "workflow": {"workflow_id":"wf-review","root_id":"root-review"},
+    "progress": {"closed":0,"total":1},
+    "signal_keys": ["needs_input"], "active": ["review"], "waiting": [], "problem_codes": []
+  },
+  {
+    "name": "worker stopped",
+    "source": {
+      "convoy": {"id":"convoy-stop","title":"Stopped","type":"convoy","status":"open","metadata":{"work_dir":"/tmp/stop","parent_commit":"abc","feature_branch":"feature/stop","workflow_root":"wf-stop"}},
+      "children": [{"id":"dev","title":"Dev","type":"task","status":"in_progress","assignee":"missing-worker","metadata":{"gc.step_ref":"dev"}}],
+      "progress": {"closed":0,"total":1}
+    },
+    "workflow": {"workflow_id":"wf-stop","root_id":"root-stop"},
+    "progress": {"closed":0,"total":1},
+    "signal_keys": ["stopped"], "active": ["dev"], "waiting": [], "problem_codes": []
+  },
+  {
+    "name": "parallel steps",
+    "source": {
+      "convoy": {"id":"convoy-parallel","title":"Parallel","type":"convoy","status":"open","metadata":{"work_dir":"/tmp/parallel","parent_commit":"abc","feature_branch":"feature/parallel","workflow_root":"wf-parallel"}},
+      "children": [
+        {"id":"prebake","title":"Prebake worker","type":"task","status":"in_progress","metadata":{"gc.step_ref":"prebake"}},
+        {"id":"plan","title":"Architecture worker","type":"task","status":"in_progress","metadata":{"gc.step_ref":"plan"}}
+      ],
+      "progress": {"closed":0,"total":2}
+    },
+    "workflow": {"workflow_id":"wf-parallel","root_id":"root-parallel"},
+    "progress": {"closed":0,"total":2},
+    "signal_keys": [], "active": ["prebake","plan"], "waiting": [], "problem_codes": []
+  },
+  {
+    "name": "total zero",
+    "source": {
+      "convoy": {"id":"convoy-zero","title":"Zero","type":"convoy","status":"open","metadata":{"work_dir":"/tmp/zero","parent_commit":"abc","feature_branch":"feature/zero","workflow_root":"wf-zero"}},
+      "children": [], "progress": {"closed":0,"total":0}
+    },
+    "workflow": {"workflow_id":"wf-zero","root_id":"root-zero"},
+    "progress": {"closed":0,"total":0},
+    "signal_keys": [], "active": [], "waiting": [], "problem_codes": []
+  },
+  {
+    "name": "missing fields and partial sources",
+    "source": {"convoy":{"id":"","title":"","type":"convoy","status":"","metadata":{}},"problems":[{"code":"upstream_partial","source":"convoys","detail":"one store unavailable","retryable":true}],"partial":true},
+    "sessions": {"partial":true,"problems":[{"code":"upstream_partial","source":"sessions","detail":"probe failed","retryable":true}]},
+    "pending": {"partial":true,"problems":[{"code":"upstream_partial","source":"pending","detail":"probe failed","retryable":true}]},
+    "progress": null,
+    "signal_keys": [], "active": [], "waiting": [],
+    "problem_codes": ["missing_required_field","missing_progress","missing_worktree","missing_workflow","upstream_partial"]
+  }
+]

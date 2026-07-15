@@ -2,6 +2,14 @@
   box-sizing: border-box;
 }
 
+:root {
+  --cc-size-cockpit-nav-min: 15rem;
+  --cc-size-cockpit-nav-max: 22rem;
+  --cc-size-cockpit-tool-min: 20rem;
+  --cc-flex-cockpit-nav-grow: 1;
+  --cc-flex-cockpit-tool-grow: 999;
+}
+
 html,
 body,
 #root {
@@ -30,7 +38,7 @@ body {
 }
 
 .app-workspace {
-  width: min(72rem, 100%);
+  width: min(96rem, 100%);
   min-height: 24rem;
   margin: var(--cc-space-0) auto;
 }

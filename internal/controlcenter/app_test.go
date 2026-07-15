@@ -4,13 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"io/fs"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"testing/fstest"
 	"time"
+
+	"github.com/gastownhall/gascity/internal/controlcenter/gcstate"
 )
 
 func staticTestFS() fs.FS {
@@ -22,7 +27,7 @@ func staticTestFS() fs.FS {
 
 func newTestApp(t *testing.T, ping func(context.Context) error) *App {
 	t.Helper()
-	app, err := NewApp(validTestConfig(), Dependencies{StaticFS: staticTestFS(), SupervisorPing: ping})
+	app, err := NewApp(validTestConfig(), Dependencies{StaticFS: staticTestFS(), SupervisorFactory: testSupervisorFactory(t, ping, nil)})
 	if err != nil {
 		t.Fatalf("NewApp: %v", err)
 	}
@@ -70,8 +75,8 @@ func TestStaticReservedPathsCannotBeShadowedByPackagedFiles(t *testing.T) {
 		"openapi-shadow.json": &fstest.MapFile{Data: []byte(`{"openapi":"shadow"}`)},
 	}
 	app, err := NewApp(validTestConfig(), Dependencies{
-		StaticFS:       shadowed,
-		SupervisorPing: func(context.Context) error { return nil },
+		StaticFS:          shadowed,
+		SupervisorFactory: testSupervisorFactory(t, func(context.Context) error { return nil }, nil),
 	})
 	if err != nil {
 		t.Fatalf("NewApp: %v", err)
@@ -155,67 +160,285 @@ func TestHostGuardReturnsTypedProblemDetails(t *testing.T) {
 }
 
 func TestAppRunStopsGracefullyWhenContextIsCancelled(t *testing.T) {
-	app := newTestApp(t, func(context.Context) error { return nil })
+	source := &appEventSource{opened: make(chan *appEventStream, 1)}
+	app, err := NewApp(validTestConfig(), Dependencies{
+		StaticFS:          staticTestFS(),
+		SupervisorFactory: testSupervisorFactory(t, func(context.Context) error { return nil }, source),
+	})
+	if err != nil {
+		t.Fatalf("NewApp: %v", err)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- app.Run(ctx) }()
+	stream := waitForAppStream(t, source)
+
+	localServer := httptest.NewServer(app.Handler())
+	defer localServer.Close()
+	response, err := localServer.Client().Get(localServer.URL + "/api/v1/events")
+	if err != nil {
+		t.Fatalf("GET local events: %v", err)
+	}
+	defer func() { _ = response.Body.Close() }()
 	cancel()
 
 	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("Run after cancel: %v", err)
+	case runErr := <-done:
+		if runErr != nil {
+			t.Fatalf("Run after cancel: %v", runErr)
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("Run did not stop after context cancellation")
+	}
+	select {
+	case <-stream.done:
+	case <-time.After(time.Second):
+		t.Fatal("Run did not close the current upstream stream")
+	}
+	readDone := make(chan struct{})
+	go func() { _, _ = io.ReadAll(response.Body); close(readDone) }()
+	select {
+	case <-readDone:
+	case <-time.After(time.Second):
+		t.Fatal("Run did not release the local SSE handler")
+	}
+	source.mu.Lock()
+	streamCount := len(source.streams)
+	source.mu.Unlock()
+	if streamCount != 1 {
+		t.Fatalf("event hub opened %d upstream streams, want exactly one", streamCount)
+	}
+}
+
+func TestAppRunCleansUpHubAndLocalSSEAfterServeError(t *testing.T) {
+	source := &appEventSource{opened: make(chan *appEventStream, 1)}
+	app, err := NewApp(validTestConfig(), Dependencies{
+		StaticFS:          staticTestFS(),
+		SupervisorFactory: testSupervisorFactory(t, func(context.Context) error { return nil }, source),
+	})
+	if err != nil {
+		t.Fatalf("NewApp: %v", err)
+	}
+	localServer := httptest.NewServer(app.Handler())
+	defer localServer.Close()
+	response, err := localServer.Client().Get(localServer.URL + "/api/v1/events")
+	if err != nil {
+		t.Fatalf("GET local events: %v", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+
+	serveFailure := errors.New("injected serve failure")
+	app.serve = func(*http.Server, net.Listener) error {
+		select {
+		case <-source.opened:
+			return serveFailure
+		case <-time.After(2 * time.Second):
+			return errors.New("upstream stream did not start")
+		}
+	}
+	runDone := make(chan error, 1)
+	go func() { runDone <- app.Run(context.Background()) }()
+	select {
+	case runErr := <-runDone:
+		if runErr == nil || !strings.Contains(runErr.Error(), serveFailure.Error()) {
+			t.Fatalf("Run error = %v", runErr)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Run did not finish cleanup after Serve error")
+	}
+	readDone := make(chan struct{})
+	go func() { _, _ = io.ReadAll(response.Body); close(readDone) }()
+	select {
+	case <-readDone:
+	case <-time.After(time.Second):
+		t.Fatal("Serve error did not release local SSE subscription")
 	}
 }
 
 func TestNewAppRejectsMissingStaticBundle(t *testing.T) {
 	_, err := NewApp(validTestConfig(), Dependencies{
-		StaticFS: fstest.MapFS{},
-		SupervisorPing: func(context.Context) error {
-			return errors.New("not relevant")
-		},
+		StaticFS:          fstest.MapFS{},
+		SupervisorFactory: testSupervisorFactory(t, func(context.Context) error { return errors.New("not relevant") }, nil),
 	})
 	if err == nil {
 		t.Fatal("NewApp accepted a static bundle without index.html")
 	}
 }
 
-func TestNewAppRejectsConflictingSupervisorDependencies(t *testing.T) {
+func TestNewAppRejectsMissingSupervisorFactory(t *testing.T) {
 	_, err := NewApp(validTestConfig(), Dependencies{
-		StaticFS:       staticTestFS(),
-		SupervisorPing: func(context.Context) error { return nil },
-		SupervisorPingFactory: func(string) (func(context.Context) error, error) {
-			return func(context.Context) error { return nil }, nil
-		},
+		StaticFS: staticTestFS(),
 	})
-	if err == nil || !strings.Contains(err.Error(), "either SupervisorPing or SupervisorPingFactory") {
-		t.Fatalf("NewApp conflicting Supervisor dependencies error = %v", err)
+	if err == nil || !strings.Contains(err.Error(), "Supervisor factory is required") {
+		t.Fatalf("NewApp missing Supervisor factory error = %v", err)
 	}
 }
 
-func TestNewAppWrapsSupervisorPingFactoryError(t *testing.T) {
+func TestNewAppCallsSupervisorFactoryOnceWithNormalizedConfig(t *testing.T) {
+	calls := 0
+	var gotURL, gotCity string
+	bundle := testSupervisorBundle(t, func(context.Context) error { return nil }, nil)
 	_, err := NewApp(validTestConfig(), Dependencies{
 		StaticFS: staticTestFS(),
-		SupervisorPingFactory: func(string) (func(context.Context) error, error) {
-			return nil, errors.New("factory unavailable")
+		SupervisorFactory: func(supervisorURL, cityName string) (SupervisorBundle, error) {
+			calls++
+			gotURL, gotCity = supervisorURL, cityName
+			return bundle, nil
 		},
 	})
-	if err == nil || !strings.Contains(err.Error(), "create Supervisor ping: factory unavailable") {
+	if err != nil {
+		t.Fatalf("NewApp: %v", err)
+	}
+	if calls != 1 || gotURL != "http://127.0.0.1:8372" || gotCity != "taxdome" {
+		t.Fatalf("factory calls=%d url=%q city=%q", calls, gotURL, gotCity)
+	}
+}
+
+func TestNewAppWrapsSupervisorFactoryError(t *testing.T) {
+	_, err := NewApp(validTestConfig(), Dependencies{
+		StaticFS: staticTestFS(),
+		SupervisorFactory: func(string, string) (SupervisorBundle, error) {
+			return SupervisorBundle{}, errors.New("factory unavailable")
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "create Supervisor dependencies: factory unavailable") {
 		t.Fatalf("NewApp Supervisor factory error = %v", err)
 	}
 }
 
-func TestNewAppRejectsNilSupervisorPingFromFactory(t *testing.T) {
-	_, err := NewApp(validTestConfig(), Dependencies{
-		StaticFS: staticTestFS(),
-		SupervisorPingFactory: func(string) (func(context.Context) error, error) {
-			return nil, nil
-		},
-	})
-	if err == nil || !strings.Contains(err.Error(), "Supervisor ping factory returned nil") {
-		t.Fatalf("NewApp nil Supervisor ping error = %v", err)
+func TestNewAppRejectsIncompleteSupervisorBundle(t *testing.T) {
+	complete := testSupervisorBundle(t, func(context.Context) error { return nil }, nil)
+	tests := []struct {
+		name   string
+		mutate func(*SupervisorBundle)
+	}{
+		{name: "ping", mutate: func(bundle *SupervisorBundle) { bundle.Ping = nil }},
+		{name: "state", mutate: func(bundle *SupervisorBundle) { bundle.State = nil }},
+		{name: "events", mutate: func(bundle *SupervisorBundle) { bundle.Events = nil }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			bundle := complete
+			test.mutate(&bundle)
+			_, err := NewApp(validTestConfig(), Dependencies{
+				StaticFS:          staticTestFS(),
+				SupervisorFactory: func(string, string) (SupervisorBundle, error) { return bundle, nil },
+			})
+			if err == nil || !strings.Contains(err.Error(), "incomplete Supervisor dependency bundle") {
+				t.Fatalf("NewApp incomplete bundle error = %v", err)
+			}
+		})
 	}
 }
+
+type appReader struct{}
+
+func (*appReader) ListConvoys(context.Context) gcstate.Page[gcstate.BeadSource] {
+	return gcstate.Page[gcstate.BeadSource]{Items: []gcstate.BeadSource{}}
+}
+
+func (*appReader) ListRecentClosedConvoys(context.Context, int) gcstate.Page[gcstate.BeadSource] {
+	return gcstate.Page[gcstate.BeadSource]{Items: []gcstate.BeadSource{}}
+}
+
+func (*appReader) GetConvoy(context.Context, string) (gcstate.ConvoySource, error) {
+	return gcstate.ConvoySource{}, nil
+}
+
+func (*appReader) GetWorkflow(context.Context, string, string, string) (gcstate.WorkflowSource, error) {
+	return gcstate.WorkflowSource{}, nil
+}
+
+func (*appReader) ListSessions(context.Context) gcstate.Page[gcstate.SessionSource] {
+	return gcstate.Page[gcstate.SessionSource]{Items: []gcstate.SessionSource{}}
+}
+
+func (*appReader) ListPending(context.Context) gcstate.Page[gcstate.PendingSource] {
+	return gcstate.Page[gcstate.PendingSource]{Items: []gcstate.PendingSource{}}
+}
+
+func (*appReader) ListOrders(context.Context) ([]gcstate.OrderSource, error) {
+	return []gcstate.OrderSource{}, nil
+}
+
+func (*appReader) CheckOrders(context.Context) ([]gcstate.OrderCheckSource, error) {
+	return []gcstate.OrderCheckSource{}, nil
+}
+
+func (*appReader) ListOrderFeed(context.Context) gcstate.Page[gcstate.OrderFeedSource] {
+	return gcstate.Page[gcstate.OrderFeedSource]{Items: []gcstate.OrderFeedSource{}}
+}
+
+func (*appReader) ListOrderHistory(context.Context, string, string, int) ([]gcstate.OrderRunSource, error) {
+	return []gcstate.OrderRunSource{}, nil
+}
+
+func (*appReader) GetOrderRunOutput(context.Context, string, string) (gcstate.OrderRunOutput, error) {
+	return gcstate.OrderRunOutput{}, nil
+}
+
+type appEventSource struct {
+	mu      sync.Mutex
+	streams []*appEventStream
+	opened  chan *appEventStream
+}
+
+func (s *appEventSource) StreamEvents(context.Context, string) (gcstate.EventStream, error) {
+	stream := &appEventStream{done: make(chan struct{})}
+	s.mu.Lock()
+	s.streams = append(s.streams, stream)
+	s.mu.Unlock()
+	if s.opened != nil {
+		select {
+		case s.opened <- stream:
+		default:
+		}
+	}
+	return stream, nil
+}
+
+type appEventStream struct {
+	once sync.Once
+	done chan struct{}
+}
+
+func (s *appEventStream) Recv() (gcstate.EventEnvelope, error) {
+	<-s.done
+	return gcstate.EventEnvelope{}, errors.New("closed")
+}
+func (s *appEventStream) Close() error { s.once.Do(func() { close(s.done) }); return nil }
+
+func waitForAppStream(t *testing.T, source *appEventSource) *appEventStream {
+	t.Helper()
+	select {
+	case stream := <-source.opened:
+		return stream
+	case <-time.After(2 * time.Second):
+		t.Fatal("event hub did not open its upstream stream")
+		return nil
+	}
+}
+
+func testSupervisorFactory(t *testing.T, ping func(context.Context) error, source *appEventSource) SupervisorFactory {
+	t.Helper()
+	bundle := testSupervisorBundle(t, ping, source)
+	return func(string, string) (SupervisorBundle, error) { return bundle, nil }
+}
+
+func testSupervisorBundle(t *testing.T, ping func(context.Context) error, source *appEventSource) SupervisorBundle {
+	t.Helper()
+	state, err := gcstate.NewService(&appReader{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	if source == nil {
+		source = &appEventSource{}
+	}
+	hub, err := gcstate.NewHub(source)
+	if err != nil {
+		t.Fatalf("NewHub: %v", err)
+	}
+	return SupervisorBundle{Ping: ping, State: state, Events: hub}
+}
+
+var _ gcstate.Reader = (*appReader)(nil)
