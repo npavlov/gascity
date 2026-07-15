@@ -325,6 +325,9 @@
               "null"
             ]
           },
+          "session_id": {
+            "type": "string"
+          },
           "turn": {
             "$ref": "#/components/schemas/TranscriptTurn"
           }
@@ -1002,6 +1005,9 @@
             "format": "int64",
             "minimum": 0,
             "type": "integer"
+          },
+          "session_id": {
+            "type": "string"
           },
           "stale": {
             "type": "boolean"

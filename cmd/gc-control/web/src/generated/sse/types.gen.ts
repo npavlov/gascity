@@ -116,6 +116,7 @@ export type MayorEvent = {
     kind: 'turn' | 'activity' | 'pending' | 'invalidate' | 'stale';
     pending?: PendingInteraction;
     resources: Array<string> | null;
+    session_id?: string;
     turn?: TranscriptTurn;
 };
 
@@ -311,6 +312,7 @@ export type TranscriptPage = {
     has_older: boolean;
     problems: Array<MayorProblem> | null;
     returned: number;
+    session_id?: string;
     stale: boolean;
     total: number;
     turns: Array<TranscriptTurn> | null;

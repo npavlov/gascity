@@ -72,14 +72,15 @@ type TranscriptTurn struct {
 
 // TranscriptPage is one chronological page of conversation turns.
 type TranscriptPage struct {
-	Turns    []TranscriptTurn `json:"turns"`
-	HasOlder bool             `json:"has_older"`
-	Before   string           `json:"before,omitempty"`
-	Returned int              `json:"returned" minimum:"0"`
-	Total    int              `json:"total" minimum:"0"`
-	Degraded bool             `json:"degraded"`
-	Stale    bool             `json:"stale"`
-	Problems []MayorProblem   `json:"problems"`
+	SessionID string           `json:"session_id,omitempty"`
+	Turns     []TranscriptTurn `json:"turns"`
+	HasOlder  bool             `json:"has_older"`
+	Before    string           `json:"before,omitempty"`
+	Returned  int              `json:"returned" minimum:"0"`
+	Total     int              `json:"total" minimum:"0"`
+	Degraded  bool             `json:"degraded"`
+	Stale     bool             `json:"stale"`
+	Problems  []MayorProblem   `json:"problems"`
 }
 
 // PendingInteraction is the current explicit provider request for input.
@@ -121,6 +122,7 @@ type InteractionReceipt struct {
 //
 //nolint:revive // The prefix preserves a distinct external OpenAPI schema name.
 type MayorEvent struct {
+	SessionID string              `json:"session_id,omitempty"`
 	Kind      string              `json:"kind" enum:"turn,activity,pending,invalidate,stale"`
 	Cursor    string              `json:"cursor,omitempty"`
 	Turn      *TranscriptTurn     `json:"turn,omitempty"`
@@ -159,12 +161,13 @@ type SessionSource struct {
 
 // TranscriptPageSource is the generated transcript subset.
 type TranscriptPageSource struct {
-	Turns    []TranscriptTurn
-	HasOlder bool
-	Before   string
-	Returned int
-	Total    int
-	Problems []MayorProblem
+	SessionID string
+	Turns     []TranscriptTurn
+	HasOlder  bool
+	Before    string
+	Returned  int
+	Total     int
+	Problems  []MayorProblem
 }
 
 // PendingSource is the generated pending-interaction response.
@@ -208,11 +211,12 @@ type SubmitResult struct {
 
 // SessionEvent is one decoded event from the configured session stream.
 type SessionEvent struct {
-	Kind     string
-	Cursor   string
-	Turns    []TranscriptTurn
-	Activity string
-	Pending  *PendingInteraction
+	SessionID string
+	Kind      string
+	Cursor    string
+	Turns     []TranscriptTurn
+	Activity  string
+	Pending   *PendingInteraction
 }
 
 // Reader is the exact read-only Supervisor boundary used by Service.

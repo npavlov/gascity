@@ -116,6 +116,7 @@ function mayorMethods(overrides: Partial<MayorAPI> = {}): MayorAPI {
   return {
     getMayor: vi.fn(async () => mayorView),
     getMayorTranscript: vi.fn(async () => ({
+      session_id: "mayor-session",
       turns: [{ role: "assistant", text: "Mayor ready" }],
       has_older: false,
       returned: 1,
@@ -217,6 +218,7 @@ describe("App", () => {
     const getMayorTranscript = vi.fn<MayorAPI["getMayorTranscript"]>()
       .mockRejectedValueOnce(new Error("bootstrap transcript offline"))
       .mockResolvedValue({
+        session_id: "mayor-session",
         turns: [{ role: "assistant", text: "Mayor recovered" }],
         has_older: false,
         returned: 1,

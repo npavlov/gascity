@@ -338,6 +338,7 @@ export interface components {
             kind: "turn" | "activity" | "pending" | "invalidate" | "stale";
             pending?: components["schemas"]["PendingInteraction"];
             resources: string[] | null;
+            session_id?: string;
             turn?: components["schemas"]["TranscriptTurn"];
         };
         MayorInteractionBody: {
@@ -508,6 +509,7 @@ export interface components {
             problems: components["schemas"]["MayorProblem"][] | null;
             /** Format: int64 */
             returned: number;
+            session_id?: string;
             stale: boolean;
             /** Format: int64 */
             total: number;

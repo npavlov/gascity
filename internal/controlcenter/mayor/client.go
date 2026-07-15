@@ -160,7 +160,10 @@ func (c *Client) Transcript(ctx context.Context, identity, before string) (Trans
 	if body.Format != "conversation" {
 		return TranscriptPageSource{}, &UpstreamError{Code: "upstream_protocol", StatusCode: http.StatusOK, Detail: "Supervisor returned a non-conversation Mayor transcript"}
 	}
-	result := TranscriptPageSource{}
+	if strings.TrimSpace(body.Id) == "" {
+		return TranscriptPageSource{}, &UpstreamError{Code: "upstream_protocol", StatusCode: http.StatusOK, Detail: "Supervisor Mayor transcript omitted its session ID"}
+	}
+	result := TranscriptPageSource{SessionID: body.Id}
 	if body.Turns != nil {
 		result.Turns = make([]TranscriptTurn, 0, len(*body.Turns))
 		for _, turn := range *body.Turns {
@@ -369,6 +372,9 @@ func (s *sessionStream) Recv() (SessionEvent, error) {
 			if payload.Format != "conversation" || payload.Turns == nil {
 				return SessionEvent{}, &UpstreamError{Code: "upstream_protocol", Detail: "Mayor turn event omitted conversation turns"}
 			}
+			if strings.TrimSpace(payload.Id) == "" {
+				return SessionEvent{}, &UpstreamError{Code: "upstream_protocol", Detail: "Mayor turn event omitted its session ID"}
+			}
 			turns := make([]TranscriptTurn, 0, len(*payload.Turns))
 			for _, source := range *payload.Turns {
 				turn, err := projectTranscriptTurn(source.Role, source.Text)
@@ -383,7 +389,7 @@ func (s *sessionStream) Recv() (SessionEvent, error) {
 				}
 				turns = append(turns, turn)
 			}
-			return SessionEvent{Kind: "turn", Cursor: frame.ID, Turns: turns}, nil
+			return SessionEvent{SessionID: payload.Id, Kind: "turn", Cursor: frame.ID, Turns: turns}, nil
 		case "activity":
 			var payload genclient.SessionActivityEvent
 			if err := json.Unmarshal(frame.Data, &payload); err != nil {

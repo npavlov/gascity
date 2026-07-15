@@ -30,7 +30,11 @@ const view: MayorView = {
   problems: [],
 };
 
-const transcript = (text = "existing"): TranscriptPage => ({
+type SessionTranscriptPage = TranscriptPage & { session_id: string };
+type MayorEventInput = Omit<MayorEvent, "session_id">;
+
+const transcript = (text = "existing", sessionID = "session-1"): SessionTranscriptPage => ({
+	session_id: sessionID,
   turns: [{ role: "assistant", text, timestamp: "2026-07-15T10:00:00Z" }],
   has_older: true,
   before: "older",
@@ -40,6 +44,33 @@ const transcript = (text = "existing"): TranscriptPage => ({
   stale: false,
   problems: [],
 });
+
+function eventForSession(event: MayorEventInput, sessionID = "session-1"): MayorEvent {
+	return { ...event, session_id: sessionID } as MayorEvent;
+}
+
+function transcriptTail(texts: string[], sessionID = "session-1"): SessionTranscriptPage {
+	return {
+		...transcript(texts.at(-1) ?? "", sessionID),
+		turns: texts.map((text) => ({ role: "assistant", text })),
+		has_older: false,
+		before: undefined,
+		returned: texts.length,
+		total: texts.length,
+	};
+}
+
+function recordedConnector() {
+	const callbacks: MayorStreamCallbacks[] = [];
+	const stops: Array<ReturnType<typeof vi.fn>> = [];
+	const connector = vi.fn<MayorStreamConnector>((next) => {
+		callbacks.push(next);
+		const stop = vi.fn();
+		stops.push(stop);
+		return stop;
+	});
+	return { connector, callbacks, stops };
+}
 
 function fakeMayorAPI(overrides: Partial<MayorAPI> = {}): MayorAPI {
   return {
@@ -94,7 +125,7 @@ describe("useMayor", () => {
 		expect(hook.result.current.turns.map((turn) => turn.text)).toEqual(["arrived during bootstrap"]);
 	});
 
-  it("keeps the stream closed after a failed bootstrap until a full snapshot is confirmed", async () => {
+	it("keeps the stream closed after a failed bootstrap until a full snapshot is confirmed", async () => {
     const connector = vi.fn<MayorStreamConnector>(() => () => undefined);
     const getMayorTranscript = vi.fn<MayorAPI["getMayorTranscript"]>()
       .mockRejectedValueOnce(new Error("bootstrap transcript offline"))
@@ -109,6 +140,27 @@ describe("useMayor", () => {
     await waitFor(() => expect(connector).toHaveBeenCalledOnce());
     expect(hook.result.current.turns.map((turn) => turn.text)).toEqual(["recovered baseline"]);
   });
+
+	it("accepts an empty transcript baseline for a dormant Mayor without opening the stream", async () => {
+		const connector = vi.fn<MayorStreamConnector>(() => () => undefined);
+		const api = fakeMayorAPI({
+			getMayor: vi.fn<MayorAPI["getMayor"]>(async () => ({
+				...view,
+				state: "available_dormant",
+				materialized: false,
+				running: false,
+				session_id: undefined,
+			})),
+			getMayorTranscript: vi.fn(async () => ({ ...transcript(), session_id: undefined, turns: [], returned: 0, total: 0 })),
+		});
+		const hook = renderHook(() => useMayor({ api, connector }));
+
+		await waitFor(() => expect(hook.result.current.loading).toBe(false));
+		await waitFor(() => expect(api.getMayorTranscript).toHaveBeenCalledOnce());
+		expect(hook.result.current.stale).toBe(false);
+		expect(hook.result.current.turns).toEqual([]);
+		expect(connector).not.toHaveBeenCalled();
+	});
 
 	it("applies a valid Mayor view before a slow transcript lane settles", async () => {
 		const pendingTranscript = deferred<TranscriptPage>();
@@ -161,6 +213,71 @@ describe("useMayor", () => {
 		expect(hook.result.current.turns.map((turn) => turn.text)).toEqual(["Still working", "Still working"]);
 	});
 
+	it("keeps authoritative history across overlapping bounded transcript tails", async () => {
+		let tailCall = 0;
+		const getMayorTranscript = vi.fn<MayorAPI["getMayorTranscript"]>(async (before) => {
+			if (before) return transcriptTail(["O", "A"]);
+			tailCall += 1;
+			if (tailCall === 1) return { ...transcriptTail(["A", "B"]), has_older: true, before: "older", total: 3 };
+			if (tailCall === 2) return transcriptTail(["B", "C", "D"]);
+			return transcriptTail(["C", "D", "E"]);
+		});
+		const api = fakeMayorAPI({ getMayorTranscript });
+		const hook = renderHook(() => useMayor({ api, connector: () => () => undefined }));
+		await waitFor(() => expect(hook.result.current.turns.map((turn) => turn.text)).toEqual(["A", "B"]));
+		await act(async () => { await hook.result.current.loadOlder(); });
+		expect(hook.result.current.turns.map((turn) => turn.text)).toEqual(["O", "A", "B"]);
+
+		await act(async () => { await hook.result.current.refreshSnapshots(); });
+		await act(async () => { await hook.result.current.refreshSnapshots(); });
+
+		expect(hook.result.current.turns.map((turn) => turn.text)).toEqual(["O", "A", "B", "C", "D", "E"]);
+	});
+
+	it("keeps the deeper pagination cursor across an intervening tail refresh", async () => {
+		let tailCall = 0;
+		const getMayorTranscript = vi.fn<MayorAPI["getMayorTranscript"]>(async (before) => {
+			if (before === "p1") {
+				return { ...transcriptTail(["older", "current"]), has_older: true, before: "p0", total: 3 };
+			}
+			if (before === "p0") {
+				return { ...transcriptTail(["oldest", "older"]), has_older: false, before: undefined, total: 3 };
+			}
+			tailCall += 1;
+			return {
+				...transcriptTail(tailCall === 1 ? ["current"] : ["current", "newest"]),
+				has_older: true,
+				before: "p1",
+				total: tailCall === 1 ? 2 : 4,
+			};
+		});
+		const api = fakeMayorAPI({ getMayorTranscript });
+		const hook = renderHook(() => useMayor({ api, connector: () => () => undefined }));
+		await waitFor(() => expect(hook.result.current.turns.map((turn) => turn.text)).toEqual(["current"]));
+
+		await act(async () => { await hook.result.current.loadOlder(); });
+		expect(getMayorTranscript).toHaveBeenLastCalledWith("p1", expect.any(AbortSignal));
+		await act(async () => { await hook.result.current.refreshSnapshots(); });
+		await act(async () => { await hook.result.current.loadOlder(); });
+
+		expect(getMayorTranscript).toHaveBeenLastCalledWith("p0", expect.any(AbortSignal));
+		expect(hook.result.current.hasOlder).toBe(false);
+		expect(hook.result.current.turns.map((turn) => turn.text)).toEqual(["oldest", "older", "current", "newest"]);
+	});
+
+	it("preserves repeated untimestamped multiplicity while advancing a bounded tail", async () => {
+		const getMayorTranscript = vi.fn<MayorAPI["getMayorTranscript"]>()
+			.mockResolvedValueOnce(transcriptTail(["repeat", "repeat", "B"]))
+			.mockResolvedValueOnce(transcriptTail(["repeat", "B", "C"]));
+		const api = fakeMayorAPI({ getMayorTranscript });
+		const hook = renderHook(() => useMayor({ api, connector: () => () => undefined }));
+		await waitFor(() => expect(hook.result.current.turns).toHaveLength(3));
+
+		await act(async () => { await hook.result.current.refreshSnapshots(); });
+
+		expect(hook.result.current.turns.map((turn) => turn.text)).toEqual(["repeat", "repeat", "B", "C"]);
+	});
+
 	it("preserves every live turn when multiple turns share one backend cursor", async () => {
 		const feed = controlledConnector();
 		const api = fakeMayorAPI();
@@ -168,8 +285,8 @@ describe("useMayor", () => {
 		await waitFor(() => expect(hook.result.current.loading).toBe(false));
 
 		act(() => {
-			feed.callbacks().onEvent({ kind: "turn", cursor: "shared-cursor", resources: ["transcript"], turn: { role: "assistant", text: "first turn" } });
-			feed.callbacks().onEvent({ kind: "turn", cursor: "shared-cursor", resources: ["transcript"], turn: { role: "assistant", text: "second turn" } });
+			feed.callbacks().onEvent(eventForSession({ kind: "turn", cursor: "shared-cursor", resources: ["transcript"], turn: { role: "assistant", text: "first turn" } }));
+			feed.callbacks().onEvent(eventForSession({ kind: "turn", cursor: "shared-cursor", resources: ["transcript"], turn: { role: "assistant", text: "second turn" } }));
 		});
 
 		expect(hook.result.current.turns.slice(-2).map((turn) => turn.text)).toEqual(["first turn", "second turn"]);
@@ -186,12 +303,12 @@ describe("useMayor", () => {
 		await waitFor(() => expect(hook.result.current.loading).toBe(false));
 
 		act(() => {
-			feed.callbacks().onEvent({ kind: "turn", cursor: "shared-cursor", resources: ["transcript"], turn: { ...repeated } });
-			feed.callbacks().onEvent({ kind: "turn", cursor: "shared-cursor", resources: ["transcript"], turn: { ...repeated } });
+			feed.callbacks().onEvent(eventForSession({ kind: "turn", cursor: "shared-cursor", resources: ["transcript"], turn: { ...repeated } }));
+			feed.callbacks().onEvent(eventForSession({ kind: "turn", cursor: "shared-cursor", resources: ["transcript"], turn: { ...repeated } }));
 		});
 		await act(async () => { await hook.result.current.refresh(); });
 
-		expect(hook.result.current.turns.map((turn) => turn.text)).toEqual(["same turn", "same turn"]);
+		expect(hook.result.current.turns.map((turn) => turn.text)).toEqual(["existing", "same turn", "same turn"]);
 	});
 
 	it("does not consume a new live turn with an identical historical snapshot occurrence", async () => {
@@ -203,7 +320,7 @@ describe("useMayor", () => {
 		const hook = renderHook(() => useMayor({ api, connector: feed.connector }));
 		await waitFor(() => expect(hook.result.current.turns).toHaveLength(1));
 
-		act(() => feed.callbacks().onEvent({ kind: "turn", cursor: "new-live", resources: ["transcript"], turn: { ...repeated } }));
+		act(() => feed.callbacks().onEvent(eventForSession({ kind: "turn", cursor: "new-live", resources: ["transcript"], turn: { ...repeated } })));
 		expect(hook.result.current.turns).toHaveLength(2);
 		await act(async () => { await hook.result.current.refresh(); });
 
@@ -250,9 +367,9 @@ describe("useMayor", () => {
 		});
 		await waitFor(() => expect(hook.result.current.loading).toBe(false));
 
-		act(() => feed.callbacks().onEvent({ kind: "invalidate", resources: ["transcript"] }));
+		act(() => feed.callbacks().onEvent(eventForSession({ kind: "invalidate", resources: ["transcript"] })));
 		await waitFor(() => expect(getMayorTranscript).toHaveBeenCalledTimes(2));
-		act(() => feed.callbacks().onEvent({ kind: "invalidate", resources: ["transcript"] }));
+		act(() => feed.callbacks().onEvent(eventForSession({ kind: "invalidate", resources: ["transcript"] })));
 		hook.unmount();
 		queue.dispose();
 		blocked.resolve(transcript("released after unmount"));
@@ -312,7 +429,7 @@ describe("useMayor", () => {
     expect(hook.result.current.composerDraft).toBe("");
     expect(hook.result.current.receipt?.request_id).toBe("request-1");
 
-    act(() => feed.callbacks().onEvent({ kind: "turn", cursor: "9", resources: ["transcript"], turn: { role: "assistant", text: "live" } }));
+    act(() => feed.callbacks().onEvent(eventForSession({ kind: "turn", cursor: "9", resources: ["transcript"], turn: { role: "assistant", text: "live" } })));
     expect(hook.result.current.turns.at(-1)?.text).toBe("live");
     expect(hook.result.current.liveTurn?.text).toBe("live");
     hook.unmount();
@@ -374,8 +491,211 @@ describe("useMayor", () => {
     expect(hook.result.current.view?.session_id).toBe("session-2");
     expect(hook.result.current.turns).toEqual([]);
     expect(hook.result.current.scrollOffset).toBe(0);
-    expect(getMayorTranscript).toHaveBeenCalledTimes(transcriptCalls);
+    expect(getMayorTranscript.mock.calls.length).toBeGreaterThan(transcriptCalls);
   });
+
+	it("does not preserve old live activity onto a replacement session snapshot", async () => {
+		const replacementView = deferred<MayorView>();
+		const replacementTranscript = deferred<TranscriptPage>();
+		const getMayor = vi.fn<MayorAPI["getMayor"]>()
+			.mockResolvedValueOnce({ ...view, session_id: "session-1" })
+			.mockImplementationOnce(async () => replacementView.promise);
+		const getMayorTranscript = vi.fn<MayorAPI["getMayorTranscript"]>()
+			.mockResolvedValueOnce(transcript("session one", "session-1"))
+			.mockImplementationOnce(async () => replacementTranscript.promise);
+		const feed = controlledConnector();
+		const api = fakeMayorAPI({ getMayor, getMayorTranscript });
+		const hook = renderHook(() => useMayor({ api, connector: feed.connector }));
+		await waitFor(() => expect(feed.mounted()).toBe(true));
+
+		let refresh!: Promise<boolean>;
+		act(() => { refresh = hook.result.current.refreshSnapshots(); });
+		await waitFor(() => expect(getMayorTranscript).toHaveBeenCalledTimes(2));
+		act(() => {
+			feed.callbacks().onEvent(eventForSession({ kind: "activity", activity: "in-turn", resources: ["mayor"] }, "session-1"));
+			feed.callbacks().onEvent(eventForSession({
+				kind: "pending",
+				resources: ["pending"],
+				pending: { request_id: "old-prompt", kind: "question", options: [], metadata: {} },
+			}, "session-1"));
+		});
+		expect(hook.result.current.view?.activity).toBe("in-turn");
+		expect(hook.result.current.view?.pending?.request_id).toBe("old-prompt");
+
+		await act(async () => {
+			replacementTranscript.resolve(transcript("session two", "session-2"));
+			replacementView.resolve({ ...view, session_id: "session-2", session_name: "replacement", activity: "idle", state: "idle" });
+			await refresh;
+		});
+
+		expect(hook.result.current.view?.session_id).toBe("session-2");
+		expect(hook.result.current.view?.activity).toBe("idle");
+		expect(hook.result.current.view?.state).toBe("idle");
+		expect(hook.result.current.view?.pending).toBeUndefined();
+	});
+
+	it("rejects a transcript response from a different session epoch and keeps the stream barrier closed", async () => {
+		const connector = vi.fn<MayorStreamConnector>(() => () => undefined);
+		const api = fakeMayorAPI({
+			getMayor: vi.fn(async () => ({ ...view, session_id: "session-1" })),
+			getMayorTranscript: vi.fn(async () => transcript("wrong session", "session-old")),
+		});
+		const hook = renderHook(() => useMayor({ api, connector }));
+
+		await waitFor(() => expect(api.getMayorTranscript).toHaveBeenCalledOnce());
+		await waitFor(() => expect(hook.result.current.stale).toBe(true));
+		expect(hook.result.current.turns).toEqual([]);
+		expect(connector).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		["turn", eventForSession({ kind: "turn", cursor: "wrong-epoch", resources: ["transcript"], turn: { role: "assistant", text: "must be ignored" } }, "session-old")],
+		["activity", eventForSession({ kind: "activity", cursor: "wrong-epoch", resources: ["mayor"], activity: "in-turn" }, "session-old")],
+		["pending", eventForSession({ kind: "pending", cursor: "wrong-epoch", resources: ["pending"], pending: { request_id: "wrong-prompt", kind: "question", options: [], metadata: {} } }, "session-old")],
+	])("ignores mismatched %s events from an old session epoch", async (kind, event) => {
+		const feed = controlledConnector();
+		const api = fakeMayorAPI();
+		const hook = renderHook(() => useMayor({ api, connector: feed.connector }));
+		await waitFor(() => expect(hook.result.current.turns.map((turn) => turn.text)).toEqual(["existing"]));
+
+		act(() => feed.callbacks().onEvent(event));
+
+		expect(hook.result.current.turns.map((turn) => turn.text)).toEqual(["existing"]);
+		expect(hook.result.current.view?.activity).toBe("idle");
+		expect(hook.result.current.view?.pending).toBeUndefined();
+		expect(kind).toBeTruthy();
+	});
+
+	it.each(["owned", "external"] as const)("aborts superseded view and transcript requests using an %s signal", async (signalMode) => {
+		const oldView = deferred<MayorView>();
+		const oldTranscript = deferred<TranscriptPage>();
+		let oldViewSignal: AbortSignal | undefined;
+		let oldTranscriptSignal: AbortSignal | undefined;
+		let viewCalls = 0;
+		let transcriptCalls = 0;
+		const getMayor = vi.fn<MayorAPI["getMayor"]>(async (signal) => {
+			viewCalls += 1;
+			if (viewCalls === 2) {
+				oldViewSignal = signal;
+				return oldView.promise;
+			}
+			return view;
+		});
+		const getMayorTranscript = vi.fn<MayorAPI["getMayorTranscript"]>(async (_before, signal) => {
+			transcriptCalls += 1;
+			if (transcriptCalls === 2) {
+				oldTranscriptSignal = signal;
+				return oldTranscript.promise;
+			}
+			return transcript();
+		});
+		const api = fakeMayorAPI({ getMayor, getMayorTranscript });
+		const hook = renderHook(() => useMayor({ api, connector: () => () => undefined }));
+		await waitFor(() => expect(hook.result.current.loading).toBe(false));
+
+		let superseded!: Promise<boolean>;
+		const external = new AbortController();
+		act(() => { superseded = hook.result.current.refreshSnapshots(signalMode === "external" ? external.signal : undefined); });
+		await waitFor(() => expect(getMayorTranscript).toHaveBeenCalledTimes(2));
+		try {
+			await act(async () => { await hook.result.current.refreshSnapshots(); });
+			expect(oldViewSignal?.aborted).toBe(true);
+			expect(oldTranscriptSignal?.aborted).toBe(true);
+		} finally {
+			await act(async () => {
+				oldView.resolve(view);
+				oldTranscript.resolve(transcript());
+				await superseded;
+			});
+		}
+	});
+
+	it("closes the old stream, aborts pagination, and requires a fresh baseline after a status-only session swap", async () => {
+		const older = deferred<TranscriptPage>();
+		const fresh = deferred<TranscriptPage>();
+		let olderSignal: AbortSignal | undefined;
+		let tailCalls = 0;
+		const getMayor = vi.fn<MayorAPI["getMayor"]>()
+			.mockResolvedValueOnce({ ...view, session_id: "session-1" })
+			.mockResolvedValue({ ...view, session_id: "session-2", session_name: "replacement" });
+		const getMayorTranscript = vi.fn<MayorAPI["getMayorTranscript"]>(async (before, signal) => {
+			if (before) {
+				olderSignal = signal;
+				return older.promise;
+			}
+			tailCalls += 1;
+			if (tailCalls === 1) return transcript("session one", "session-1");
+			return fresh.promise;
+		});
+		const stream = recordedConnector();
+		const api = fakeMayorAPI({ getMayor, getMayorTranscript });
+		const hook = renderHook(() => useMayor({ api, connector: stream.connector }));
+		await waitFor(() => expect(stream.connector).toHaveBeenCalledOnce());
+		await waitFor(() => expect(hook.result.current.hasOlder).toBe(true));
+		const oldCallbacks = stream.callbacks[0];
+
+		let olderRequest!: Promise<void>;
+		act(() => { olderRequest = hook.result.current.loadOlder(); });
+		await waitFor(() => expect(getMayorTranscript.mock.calls.some(([before]) => before === "older")).toBe(true));
+		try {
+			await act(async () => { await hook.result.current.refreshStatus(); });
+			expect(olderSignal?.aborted).toBe(true);
+			await waitFor(() => expect(stream.stops[0]).toHaveBeenCalledOnce());
+			expect(hook.result.current.turns).toEqual([]);
+			act(() => oldCallbacks.onEvent(eventForSession({ kind: "turn", resources: ["transcript"], turn: { role: "assistant", text: "old event" } }, "session-1")));
+			expect(hook.result.current.turns).toEqual([]);
+			await waitFor(() => expect(tailCalls).toBe(2));
+			expect(stream.connector).toHaveBeenCalledTimes(1);
+			await act(async () => { fresh.resolve(transcript("session two baseline", "session-2")); });
+			await waitFor(() => expect(stream.connector).toHaveBeenCalledTimes(2));
+			expect(hook.result.current.turns.map((turn) => turn.text)).toEqual(["session two baseline"]);
+		} finally {
+			older.resolve({ ...transcript("obsolete older", "session-1"), has_older: false, before: undefined });
+			fresh.resolve(transcript("session two baseline", "session-2"));
+			await olderRequest;
+		}
+	});
+
+	it("queues but does not await a full baseline when a status-only refresh changes session", async () => {
+		const queued = deferred<void>();
+		const requestRefresh = vi.fn<MayorRefreshRequester>(async () => queued.promise);
+		const getMayor = vi.fn<MayorAPI["getMayor"]>()
+			.mockResolvedValueOnce({ ...view, session_id: "session-1" })
+			.mockResolvedValue({ ...view, session_id: "session-2", session_name: "replacement" });
+		const api = fakeMayorAPI({ getMayor });
+		const hook = renderHook(() => useMayor({ api, connector: () => () => undefined, requestRefresh }));
+		await waitFor(() => expect(hook.result.current.turns).toHaveLength(1));
+
+		let settled = false;
+		let statusRefresh!: Promise<boolean>;
+		try {
+			act(() => {
+				statusRefresh = hook.result.current.refreshStatus().then((result) => {
+					settled = true;
+					return result;
+				});
+			});
+			await act(async () => { await Promise.resolve(); });
+			expect(settled).toBe(true);
+			expect(requestRefresh).toHaveBeenCalledWith(["mayor-snapshots"]);
+		} finally {
+			queued.resolve();
+			await statusRefresh;
+		}
+	});
+
+	it("rejects an older transcript page from a different session epoch", async () => {
+		const getMayorTranscript = vi.fn<MayorAPI["getMayorTranscript"]>(async (before) => before
+			? { ...transcript("wrong older page", "session-old"), has_older: false, before: undefined }
+			: transcript("current page", "session-1"));
+		const api = fakeMayorAPI({ getMayorTranscript });
+		const hook = renderHook(() => useMayor({ api, connector: () => () => undefined }));
+		await waitFor(() => expect(hook.result.current.turns.map((turn) => turn.text)).toEqual(["current page"]));
+
+		await act(async () => { await hook.result.current.loadOlder(); });
+
+		expect(hook.result.current.turns.map((turn) => turn.text)).toEqual(["current page"]);
+	});
 
   it("merges older transcript chronologically without duplicates", async () => {
     const older: TranscriptPage = { ...transcript("older turn"), has_older: false, before: undefined };
@@ -427,7 +747,7 @@ describe("useMayor", () => {
 			currentPage += 1;
 			return currentPage === 1
 				? transcript("session one current")
-				: { ...transcript("session two only"), has_older: false, before: undefined };
+				: { ...transcript("session two only", "session-2"), has_older: false, before: undefined };
 		});
 		const api = fakeMayorAPI({ getMayor, getMayorTranscript });
 		const hook = renderHook(() => useMayor({ api, connector: () => () => undefined }));
@@ -453,7 +773,7 @@ describe("useMayor", () => {
       currentPage += 1;
       return currentPage === 1
         ? transcript("session one current")
-        : { ...transcript("session two current"), has_older: false, before: undefined };
+        : { ...transcript("session two current", "session-2"), has_older: false, before: undefined };
     });
     const api = fakeMayorAPI({ getMayor, getMayorTranscript });
     const hook = renderHook(() => useMayor({ api, connector: () => () => undefined }));
@@ -461,7 +781,7 @@ describe("useMayor", () => {
 
     let pendingOlder!: Promise<void>;
     act(() => { pendingOlder = hook.result.current.loadOlder(); });
-    await waitFor(() => expect(getMayorTranscript).toHaveBeenCalledWith("older"));
+    await waitFor(() => expect(getMayorTranscript).toHaveBeenCalledWith("older", expect.anything()));
     await act(async () => { await hook.result.current.refreshSnapshots(); });
 
     expect(hook.result.current.view?.session_id).toBe("session-2");
@@ -482,13 +802,39 @@ describe("useMayor", () => {
     await waitFor(() => expect(hook.result.current.turns).toHaveLength(1));
     await waitFor(() => expect(feed.mounted()).toBe(true));
     const events: MayorEvent[] = [
-      { kind: "activity", activity: "in-turn", resources: ["mayor"] },
-      { kind: "pending", resources: ["pending"], pending: { request_id: "p1", kind: "question", prompt: "Continue?", options: [], metadata: {} } },
+      eventForSession({ kind: "activity", activity: "in-turn", resources: ["mayor"] }),
+      eventForSession({ kind: "pending", resources: ["pending"], pending: { request_id: "p1", kind: "question", prompt: "Continue?", options: [], metadata: {} } }),
     ];
     act(() => events.forEach(feed.callbacks().onEvent));
     expect(hook.result.current.view?.activity).toBe("in-turn");
     expect(hook.result.current.view?.pending?.request_id).toBe("p1");
   });
+
+	it("accepts global stale and invalidate events without the active session id", async () => {
+		const getMayorTranscript = vi.fn(async () => transcript());
+		const api = fakeMayorAPI({ getMayorTranscript });
+		const feed = controlledConnector();
+		const hook = renderHook(() => useMayor({ api, connector: feed.connector }));
+		await waitFor(() => expect(feed.mounted()).toBe(true));
+		const transcriptCalls = getMayorTranscript.mock.calls.length;
+
+		act(() => feed.callbacks().onEvent({ kind: "stale", resources: ["mayor"] } as MayorEvent));
+		expect(hook.result.current.stale).toBe(true);
+		act(() => feed.callbacks().onEvent({ kind: "invalidate", resources: ["mayor", "transcript"] } as MayorEvent));
+		await waitFor(() => expect(getMayorTranscript.mock.calls.length).toBeGreaterThan(transcriptCalls));
+	});
+
+	it("treats an invalidate tagged with a replacement session as authoritative", async () => {
+		const getMayorTranscript = vi.fn(async () => transcript());
+		const api = fakeMayorAPI({ getMayorTranscript });
+		const feed = controlledConnector();
+		renderHook(() => useMayor({ api, connector: feed.connector }));
+		await waitFor(() => expect(feed.mounted()).toBe(true));
+		const transcriptCalls = getMayorTranscript.mock.calls.length;
+
+		act(() => feed.callbacks().onEvent(eventForSession({ kind: "invalidate", resources: ["mayor", "transcript"] }, "session-replacement")));
+		await waitFor(() => expect(getMayorTranscript.mock.calls.length).toBeGreaterThan(transcriptCalls));
+	});
 
   it("never carries a pending draft into a replacement request", async () => {
     const respondMayorInteraction = vi.fn<MayorAPI["respondMayorInteraction"]>(async () => ({
@@ -507,11 +853,11 @@ describe("useMayor", () => {
     await waitFor(() => expect(hook.result.current.view?.pending?.request_id).toBe("prompt-a"));
     act(() => hook.result.current.setPendingDraft("answer meant only for A"));
 
-    act(() => feed.callbacks().onEvent({
+    act(() => feed.callbacks().onEvent(eventForSession({
       kind: "pending",
       resources: ["pending"],
       pending: { request_id: "prompt-b", kind: "question", prompt: "Second?", options: ["allow"], metadata: {} },
-    }));
+    })));
 
     await waitFor(() => expect(hook.result.current.pendingDraft).toBe(""));
     await act(async () => { await hook.result.current.respond("allow"); });
@@ -541,13 +887,13 @@ describe("useMayor", () => {
     });
     await waitFor(() => expect(hook.result.current.turns).toHaveLength(1));
 
-    act(() => feed.callbacks().onEvent({ kind: "invalidate", resources: ["transcript"] }));
+    act(() => feed.callbacks().onEvent(eventForSession({ kind: "invalidate", resources: ["transcript"] })));
     await waitFor(() => expect(getMayorTranscript).toHaveBeenCalledTimes(2));
     act(() => {
       for (let index = 0; index < 5; index += 1) {
-        feed.callbacks().onEvent({ kind: "invalidate", resources: ["transcript"] });
+        feed.callbacks().onEvent(eventForSession({ kind: "invalidate", resources: ["transcript"] }));
       }
-      feed.callbacks().onEvent({ kind: "turn", cursor: "live-1", resources: ["transcript"], turn: { role: "assistant", text: "live during refresh" } });
+      feed.callbacks().onEvent(eventForSession({ kind: "turn", cursor: "live-1", resources: ["transcript"], turn: { role: "assistant", text: "live during refresh" } }));
     });
     await act(async () => { blocked.resolve(transcript("snapshot without live")); await blocked.promise; });
 
@@ -587,7 +933,7 @@ describe("useMayor", () => {
     const hook = renderHook(() => useMayor({ api, connector: feed.connector }));
     await waitFor(() => expect(hook.result.current.loading).toBe(false));
 
-    act(() => feed.callbacks().onEvent({ kind: "invalidate", resources: ["mayor"] }));
+    act(() => feed.callbacks().onEvent(eventForSession({ kind: "invalidate", resources: ["mayor"] })));
     await waitFor(() => expect(getMayor).toHaveBeenCalledTimes(2));
     await act(async () => { await hook.result.current.refreshStatus(); });
     await waitFor(() => expect(hook.result.current.view?.session_name).toBe("newer status poll"));
@@ -672,7 +1018,7 @@ describe("useMayor", () => {
     let pendingPoll!: Promise<boolean>;
     act(() => { pendingPoll = hook.result.current.refreshStatus(); });
     await waitFor(() => expect(getMayor).toHaveBeenCalledTimes(2));
-    act(() => feed.callbacks().onEvent({ kind: "invalidate", resources: ["mayor"] }));
+    act(() => feed.callbacks().onEvent(eventForSession({ kind: "invalidate", resources: ["mayor"] })));
     await waitFor(() => expect(hook.result.current.view?.session_name).toBe("newer full refresh"));
 
     await act(async () => {
@@ -694,7 +1040,7 @@ describe("useMayor", () => {
     const hook = renderHook(() => useMayor({ api, connector: feed.connector }));
     await waitFor(() => expect(hook.result.current.loading).toBe(false));
 
-    act(() => feed.callbacks().onEvent({ kind: "invalidate", resources: ["mayor"] }));
+    act(() => feed.callbacks().onEvent(eventForSession({ kind: "invalidate", resources: ["mayor"] })));
     await waitFor(() => expect(getMayor).toHaveBeenCalledTimes(2));
     await act(async () => { await hook.result.current.refreshStatus(); });
     await waitFor(() => expect(hook.result.current.error).toBe("newer poll failed"));

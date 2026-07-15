@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -65,6 +66,29 @@ func (f *fakeRawAPI) StreamEvents(ctx context.Context, city string, params *genc
 
 func response(status int) *http.Response {
 	return &http.Response{StatusCode: status, Status: http.StatusText(status), Body: io.NopCloser(strings.NewReader("")), Header: make(http.Header)}
+}
+
+func requiredSessionID(t *testing.T, value any) string {
+	t.Helper()
+	reflected := reflect.ValueOf(value)
+	if reflected.Kind() == reflect.Pointer {
+		reflected = reflected.Elem()
+	}
+	field := reflected.FieldByName("SessionID")
+	require.Truef(t, field.IsValid(), "%T must expose SessionID", value)
+	require.Equal(t, reflect.String, field.Kind())
+	return field.String()
+}
+
+func setRequiredSessionID(t *testing.T, value any, content string) {
+	t.Helper()
+	reflected := reflect.ValueOf(value)
+	require.Equal(t, reflect.Pointer, reflected.Kind())
+	field := reflected.Elem().FieldByName("SessionID")
+	require.Truef(t, field.IsValid(), "%T must expose SessionID", value)
+	require.Truef(t, field.CanSet(), "%T.SessionID must be settable", value)
+	require.Equal(t, reflect.String, field.Kind())
+	field.SetString(content)
 }
 
 func newFakeClient(t *testing.T, typed *fakeSupervisorAPI, raw *fakeRawAPI) *Client {
@@ -146,7 +170,7 @@ func TestClientOperationFailureMatrices(t *testing.T) {
 				case "nil_body":
 					return &genclient.GetV0CityByCityNameSessionByIdTranscriptResponse{HTTPResponse: response(http.StatusOK)}, nil
 				default:
-					return &genclient.GetV0CityByCityNameSessionByIdTranscriptResponse{HTTPResponse: response(http.StatusOK), JSON200: &genclient.SessionTranscriptGetResponse{Format: "conversation"}}, nil
+					return &genclient.GetV0CityByCityNameSessionByIdTranscriptResponse{HTTPResponse: response(http.StatusOK), JSON200: &genclient.SessionTranscriptGetResponse{Format: "conversation", Id: "session-1"}}, nil
 				}
 			}}
 			_, err := newFakeClient(t, typed, nil).Transcript(context.Background(), "named", "")
@@ -310,6 +334,7 @@ func TestClientTranscriptConversationPaginationAndMalformedTimestamp(t *testing.
 	older, err := client.Transcript(context.Background(), "pack/named.overseer", "older-cursor")
 	require.NoError(t, err)
 	for _, page := range []TranscriptPageSource{initial, older} {
+		assert.Equal(t, "session-1", requiredSessionID(t, page))
 		require.Len(t, page.Turns, 2)
 		assert.NotNil(t, page.Turns[0].Timestamp)
 		assert.Nil(t, page.Turns[1].Timestamp)
@@ -317,6 +342,21 @@ func TestClientTranscriptConversationPaginationAndMalformedTimestamp(t *testing.
 		assert.Equal(t, "transcript_timestamp", page.Problems[0].Code)
 		assert.Equal(t, "next-cursor", page.Before)
 	}
+}
+
+func TestClientTranscriptRejectsConversationWithoutSessionID(t *testing.T) {
+	turns := []genclient.OutputTurn{{Role: "assistant", Text: "valid turn"}}
+	typed := &fakeSupervisorAPI{transcriptFn: func(context.Context, string, string, *genclient.GetV0CityByCityNameSessionByIdTranscriptParams) (*genclient.GetV0CityByCityNameSessionByIdTranscriptResponse, error) {
+		return &genclient.GetV0CityByCityNameSessionByIdTranscriptResponse{
+			HTTPResponse: response(http.StatusOK),
+			JSON200:      &genclient.SessionTranscriptGetResponse{Format: "conversation", Turns: &turns},
+		}, nil
+	}}
+
+	_, err := newFakeClient(t, typed, nil).Transcript(context.Background(), "pack/named.overseer", "")
+	var upstream *UpstreamError
+	require.ErrorAs(t, err, &upstream)
+	assert.Equal(t, "upstream_protocol", upstream.Code)
 }
 
 func TestClientTranscriptRejectsSemanticallyEmptyTurns(t *testing.T) {

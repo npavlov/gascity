@@ -14,6 +14,7 @@ var (
 	errMayorDormant              = errors.New("configured Mayor is not materialized")
 	errMayorDiscoveryUnavailable = errors.New("configured Mayor discovery is unavailable")
 	errMayorRefreshUnavailable   = errors.New("configured Mayor authoritative refresh is unavailable")
+	errMayorSessionChanged       = errors.New("configured Mayor session changed")
 	errMayorHubStopped           = errors.New("mayor event hub stopped")
 )
 
@@ -129,13 +130,13 @@ func (h *Hub) run(ctx context.Context, done chan struct{}) {
 			continue
 		}
 		h.setCurrent(stream)
-		if refreshErr := h.refresh(ctx); refreshErr != nil {
+		if refreshErr := h.refreshSession(ctx, view.SessionID); refreshErr != nil {
 			_ = stream.Close()
 			h.setCurrent(nil)
 			if ctx.Err() != nil {
 				return
 			}
-			if errors.Is(refreshErr, errMayorDormant) {
+			if errors.Is(refreshErr, errMayorDormant) || errors.Is(refreshErr, errMayorSessionChanged) {
 				attempt = 0
 				continue
 			}
@@ -145,13 +146,13 @@ func (h *Hub) run(ctx context.Context, done chan struct{}) {
 			attempt++
 			continue
 		}
-		err = h.consume(ctx, stream, &attempt)
+		err = h.consume(ctx, stream, &attempt, view.SessionID)
 		_ = stream.Close()
 		h.setCurrent(nil)
 		if ctx.Err() != nil {
 			return
 		}
-		if errors.Is(err, errMayorDormant) {
+		if errors.Is(err, errMayorDormant) || errors.Is(err, errMayorSessionChanged) {
 			attempt = 0
 			continue
 		}
@@ -164,60 +165,49 @@ func (h *Hub) run(ctx context.Context, done chan struct{}) {
 }
 
 func (h *Hub) refresh(ctx context.Context) error {
+	return h.refreshSession(ctx, "")
+}
+
+func (h *Hub) refreshSession(ctx context.Context, expectedSessionID string) error {
 	before := ""
 	snapshot, err := h.snapshot.Snapshot(ctx, SnapshotOptions{TranscriptBefore: &before, IncludePending: true})
-	if err != nil || snapshot.TranscriptError != nil || snapshot.PendingError != nil {
-		h.publish(MayorEvent{Kind: "stale", Resources: []string{"mayor", "transcript", "pending"}})
+	if err != nil {
+		h.publish(MayorEvent{SessionID: expectedSessionID, Kind: "stale", Resources: []string{"mayor", "transcript", "pending"}})
 		return errMayorRefreshUnavailable
 	}
 	if !snapshot.View.Materialized {
-		h.publish(MayorEvent{Kind: "invalidate", Resources: []string{"mayor", "transcript", "pending"}})
+		h.publish(MayorEvent{SessionID: snapshot.View.SessionID, Kind: "invalidate", Resources: []string{"mayor", "transcript", "pending"}})
 		return errMayorDormant
 	}
-	h.publish(MayorEvent{Kind: "invalidate", Resources: []string{"mayor", "transcript", "pending"}})
+	if expectedSessionID != "" && snapshot.View.SessionID != expectedSessionID {
+		h.publish(MayorEvent{SessionID: snapshot.View.SessionID, Kind: "invalidate", Resources: []string{"mayor", "transcript", "pending"}})
+		return errMayorSessionChanged
+	}
+	if isMayorSessionChanged(snapshot.TranscriptError) {
+		h.publish(MayorEvent{SessionID: snapshot.View.SessionID, Kind: "invalidate", Resources: []string{"mayor", "transcript", "pending"}})
+		return errMayorSessionChanged
+	}
+	if snapshot.TranscriptError != nil || snapshot.PendingError != nil {
+		h.publish(MayorEvent{SessionID: snapshot.View.SessionID, Kind: "stale", Resources: []string{"mayor", "transcript", "pending"}})
+		return errMayorRefreshUnavailable
+	}
+	h.publish(MayorEvent{SessionID: snapshot.View.SessionID, Kind: "invalidate", Resources: []string{"mayor", "transcript", "pending"}})
 	return nil
 }
 
-func (h *Hub) consume(ctx context.Context, stream SessionEventStream, attempt *int) error {
+func (h *Hub) consume(ctx context.Context, stream SessionEventStream, attempt *int, epochSessionID string) error {
 	type receiveResult struct {
 		event SessionEvent
 		err   error
 	}
+	if epochSessionID == "" {
+		return errMayorDiscoveryUnavailable
+	}
+
 	receiveCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	refreshCtx, cancelRefresh := context.WithCancel(ctx)
-	refreshRequests := make(chan struct{}, 1)
-	refreshFailed := make(chan error, 1)
-	var refreshWorkers sync.WaitGroup
-	refreshWorkers.Add(1)
-	go func() {
-		defer refreshWorkers.Done()
-		for {
-			select {
-			case <-refreshCtx.Done():
-				return
-			case <-refreshRequests:
-				if err := h.refresh(refreshCtx); err != nil {
-					select {
-					case refreshFailed <- err:
-					case <-refreshCtx.Done():
-					}
-					return
-				}
-			}
-		}
-	}()
-	defer func() {
-		cancelRefresh()
-		refreshWorkers.Wait()
-	}()
-	requestRefresh := func() {
-		select {
-		case refreshRequests <- struct{}{}:
-		default:
-		}
-	}
 	received := make(chan receiveResult, 1)
+	advance := make(chan struct{})
 	go func() {
 		for {
 			event, err := stream.Recv()
@@ -229,6 +219,11 @@ func (h *Hub) consume(ctx context.Context, stream SessionEventStream, attempt *i
 			if err != nil {
 				return
 			}
+			select {
+			case <-advance:
+			case <-receiveCtx.Done():
+				return
+			}
 		}
 	}()
 	ticker := time.NewTicker(h.pollInterval)
@@ -237,8 +232,6 @@ func (h *Hub) consume(ctx context.Context, stream SessionEventStream, attempt *i
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case err := <-refreshFailed:
-			return err
 		case <-ticker.C:
 			view, err := h.snapshot.Get(ctx)
 			if err != nil || view.Stale {
@@ -247,24 +240,42 @@ func (h *Hub) consume(ctx context.Context, stream SessionEventStream, attempt *i
 			if !view.Materialized {
 				return errMayorDormant
 			}
+			if view.SessionID != epochSessionID {
+				return errMayorSessionChanged
+			}
 		case result := <-received:
 			if result.err != nil {
 				return result.err
+			}
+			if result.event.Kind == "turn" && result.event.SessionID != epochSessionID {
+				return errMayorSessionChanged
 			}
 			*attempt = 0
 			switch result.event.Kind {
 			case "turn":
 				for index := range result.event.Turns {
 					turn := result.event.Turns[index]
-					h.publish(MayorEvent{Kind: "turn", Cursor: result.event.Cursor, Turn: &turn, Resources: []string{"transcript"}})
+					h.publish(MayorEvent{SessionID: epochSessionID, Kind: "turn", Cursor: result.event.Cursor, Turn: &turn, Resources: []string{"transcript"}})
 				}
-				requestRefresh()
 			case "activity":
-				h.publish(MayorEvent{Kind: "activity", Cursor: result.event.Cursor, Activity: result.event.Activity, Resources: []string{"mayor"}})
-				requestRefresh()
+				h.publish(MayorEvent{SessionID: epochSessionID, Kind: "activity", Cursor: result.event.Cursor, Activity: result.event.Activity, Resources: []string{"mayor"}})
 			case "pending":
-				h.publish(MayorEvent{Kind: "pending", Cursor: result.event.Cursor, Pending: clonePending(result.event.Pending), Resources: []string{"pending"}})
-				requestRefresh()
+				h.publish(MayorEvent{SessionID: epochSessionID, Kind: "pending", Cursor: result.event.Cursor, Pending: clonePending(result.event.Pending), Resources: []string{"pending"}})
+			default:
+				select {
+				case advance <- struct{}{}:
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+				continue
+			}
+			if err := h.refreshSession(ctx, epochSessionID); err != nil {
+				return err
+			}
+			select {
+			case advance <- struct{}{}:
+			case <-ctx.Done():
+				return ctx.Err()
 			}
 		}
 	}
@@ -330,18 +341,24 @@ func (h *Hub) publish(event MayorEvent) {
 
 func coalesceMayorEvents(queued, incoming MayorEvent) MayorEvent {
 	resources := mergeMayorResources(queued.Resources, incoming.Resources)
+	sessionID := incoming.SessionID
+	if sessionID == "" {
+		sessionID = queued.SessionID
+	}
 	if incoming.Kind == "stale" {
 		incoming.Resources = resources
+		incoming.SessionID = sessionID
 		return incoming
 	}
 	if queued.Kind == incoming.Kind {
 		switch incoming.Kind {
 		case "activity", "pending", "stale", "invalidate":
 			incoming.Resources = resources
+			incoming.SessionID = sessionID
 			return incoming
 		}
 	}
-	return MayorEvent{Kind: "invalidate", Cursor: incoming.Cursor, Resources: resources}
+	return MayorEvent{SessionID: sessionID, Kind: "invalidate", Cursor: incoming.Cursor, Resources: resources}
 }
 
 func mergeMayorResources(groups ...[]string) []string {

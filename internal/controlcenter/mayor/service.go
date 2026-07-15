@@ -13,11 +13,12 @@ import (
 
 // Service resolves and operates only the configured named-session identity.
 type Service struct {
-	identity  string
-	reader    Reader
-	commander Commander
-	mu        sync.RWMutex
-	lastGood  *MayorView
+	identity   string
+	reader     Reader
+	commander  Commander
+	snapshotMu sync.Mutex
+	cacheMu    sync.RWMutex
+	lastGood   *MayorView
 }
 
 // SnapshotOptions selects the authoritative Mayor resources read after one
@@ -55,11 +56,12 @@ func (s *Service) Identity() string { return s.identity }
 
 // Get resolves the current Mayor state without creating or waking a session.
 func (s *Service) Get(ctx context.Context) (MayorView, error) {
-	return s.resolvedView(ctx, true)
+	snapshot, err := s.Snapshot(ctx, SnapshotOptions{AllowStale: true})
+	return snapshot.View, err
 }
 
 func (s *Service) resolvedView(ctx context.Context, allowStale bool) (MayorView, error) {
-	view, err := s.fresh(ctx)
+	view, err := s.resolve(ctx, true)
 	if err != nil {
 		if allowStale && isStatusDisconnected(err) && s.cached(&view) {
 			view.Stale = true
@@ -69,12 +71,16 @@ func (s *Service) resolvedView(ctx context.Context, allowStale bool) (MayorView,
 		}
 		return view, err
 	}
+	view = s.withCachedPending(view)
 	return view, nil
 }
 
 // Snapshot resolves the configured Mayor once, then reads only the selected
 // transcript and pending resources against that proof.
 func (s *Service) Snapshot(ctx context.Context, options SnapshotOptions) (SnapshotResult, error) {
+	s.snapshotMu.Lock()
+	defer s.snapshotMu.Unlock()
+
 	view, err := s.resolvedView(ctx, options.AllowStale)
 	result := SnapshotResult{View: view}
 	if err != nil {
@@ -84,15 +90,20 @@ func (s *Service) Snapshot(ctx context.Context, options SnapshotOptions) (Snapsh
 		result.Pending = clonePending(view.Pending)
 	}
 	if options.TranscriptBefore != nil {
-		page := TranscriptPage{Turns: []TranscriptTurn{}, Problems: append([]MayorProblem(nil), view.Problems...), Degraded: view.Degraded, Stale: view.Stale}
+		page := TranscriptPage{SessionID: view.SessionID, Turns: []TranscriptTurn{}, Problems: append([]MayorProblem(nil), view.Problems...), Degraded: view.Degraded, Stale: view.Stale}
 		if view.Materialized && !view.Stale {
 			source, readErr := s.reader.Transcript(ctx, s.identity, *options.TranscriptBefore)
-			if readErr != nil {
+			switch {
+			case readErr != nil:
 				result.TranscriptError = readErr
-			} else {
+			case strings.TrimSpace(source.SessionID) == "":
+				result.TranscriptError = &Error{Code: "upstream_protocol", Detail: "Mayor transcript omitted its session identity", StatusCode: http.StatusBadGateway}
+			case source.SessionID != view.SessionID:
+				result.TranscriptError = &Error{Code: "mayor_session_changed", Detail: "Mayor rematerialized while its transcript was being read", StatusCode: http.StatusConflict, Retryable: true}
+			default:
 				problems := append([]MayorProblem(nil), view.Problems...)
 				problems = append(problems, source.Problems...)
-				page = TranscriptPage{Turns: source.Turns, HasOlder: source.HasOlder, Before: source.Before, Returned: source.Returned, Total: source.Total, Degraded: view.Degraded || len(source.Problems) > 0, Stale: view.Stale, Problems: problems}
+				page = TranscriptPage{SessionID: view.SessionID, Turns: source.Turns, HasOlder: source.HasOlder, Before: source.Before, Returned: source.Returned, Total: source.Total, Degraded: view.Degraded || len(source.Problems) > 0, Stale: view.Stale, Problems: problems}
 			}
 		}
 		result.Transcript = &page
@@ -107,18 +118,12 @@ func (s *Service) Snapshot(ctx context.Context, options SnapshotOptions) (Snapsh
 				result.Pending = clonePending(source.Pending)
 			}
 			result.View.Pending = clonePending(result.Pending)
-			s.storePending(result.View.SessionID, result.Pending)
 		}
 	}
-	return result, nil
-}
-
-func (s *Service) fresh(ctx context.Context) (MayorView, error) {
-	view, err := s.resolve(ctx, true)
-	if err == nil {
-		view = s.storeResolved(view)
+	if !result.View.Stale && (result.TranscriptError == nil || !isMayorSessionChanged(result.TranscriptError)) {
+		result.View = s.storeResolved(result.View)
 	}
-	return view, err
+	return result, nil
 }
 
 func (s *Service) resolve(ctx context.Context, refresh404 bool) (MayorView, error) {
@@ -313,31 +318,29 @@ func (s *Service) Respond(ctx context.Context, requestID string, input Interacti
 	return InteractionReceipt(receipt), nil
 }
 
-func (s *Service) storePending(sessionID string, pending *PendingInteraction) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.lastGood == nil || !s.lastGood.Materialized || s.lastGood.SessionID != sessionID {
-		return
-	}
-	cloned := cloneView(*s.lastGood)
-	cloned.Pending = clonePending(pending)
-	s.lastGood = &cloned
-}
-
 func (s *Service) storeResolved(view MayorView) MayorView {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if view.Materialized && view.Pending == nil && s.lastGood != nil && s.lastGood.Materialized && s.lastGood.SessionID == view.SessionID {
-		view.Pending = clonePending(s.lastGood.Pending)
-	}
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
 	cloned := cloneView(view)
 	s.lastGood = &cloned
 	return view
 }
 
+func (s *Service) withCachedPending(view MayorView) MayorView {
+	if !view.Materialized || view.Pending != nil {
+		return view
+	}
+	s.cacheMu.RLock()
+	defer s.cacheMu.RUnlock()
+	if s.lastGood != nil && s.lastGood.Materialized && s.lastGood.SessionID == view.SessionID {
+		view.Pending = clonePending(s.lastGood.Pending)
+	}
+	return view
+}
+
 func (s *Service) cached(target *MayorView) bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.cacheMu.RLock()
+	defer s.cacheMu.RUnlock()
 	if s.lastGood == nil {
 		return false
 	}
@@ -348,6 +351,11 @@ func (s *Service) cached(target *MayorView) bool {
 func isStatusDisconnected(err error) bool {
 	var domainErr *Error
 	return errors.As(err, &domainErr) && domainErr.Code == "mayor_disconnected"
+}
+
+func isMayorSessionChanged(err error) bool {
+	var domainErr *Error
+	return errors.As(err, &domainErr) && domainErr.Code == "mayor_session_changed"
 }
 
 func cloneView(view MayorView) MayorView {

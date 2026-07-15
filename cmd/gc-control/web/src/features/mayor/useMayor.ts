@@ -131,9 +131,19 @@ interface LiveTurnRecord {
   turn: TranscriptTurn;
 }
 
+type TranscriptPagination = Pick<TranscriptPage, "before" | "has_older">;
+
+type RequestLane = "view" | "transcript" | "older";
+
+interface RequestHandle {
+  controller: AbortController;
+  signal: AbortSignal;
+  finish(): void;
+}
+
 export function useMayor({ api, connector = connectMayorEvents, requestRefresh }: UseMayorOptions): MayorController {
   const [view, setView] = useState<MayorView | null>(null);
-  const [transcript, setTranscript] = useState<TranscriptPage | null>(null);
+  const [pagination, setPagination] = useState<TranscriptPagination | null>(null);
   const [turns, setTurns] = useState<TranscriptTurn[]>([]);
   const [loading, setLoading] = useState(api !== null);
   const [streamStale, setStreamStale] = useState(false);
@@ -150,8 +160,9 @@ export function useMayor({ api, connector = connectMayorEvents, requestRefresh }
   const [mutationError, setMutationError] = useState<string | null>(null);
   const [scrollOffset, setScrollOffset] = useState(0);
   const [loadingOlder, setLoadingOlder] = useState(false);
-  const [streamBarrierGeneration, setStreamBarrierGeneration] = useState<number | null>(null);
+  const [streamBarrierEpoch, setStreamBarrierEpoch] = useState<number | null>(null);
   const activeControllers = useRef(new Set<AbortController>());
+  const laneControllers = useRef<Record<RequestLane, AbortController | null>>({ view: null, transcript: null, older: null });
   const lifecycleGeneration = useRef(0);
   const hasLastGood = useRef(false);
   const liveViewRevision = useRef(0);
@@ -161,151 +172,201 @@ export function useMayor({ api, connector = connectMayorEvents, requestRefresh }
   const snapshotDemandRevision = useRef(0);
   const lastSnapshotConfirmedRevision = useRef(-1);
   const unconfirmedLiveTurns = useRef<LiveTurnRecord[]>([]);
-  const loadedOlderTurns = useRef<TranscriptTurn[]>([]);
-  const authoritativeTurnCounts = useRef<Map<string, number> | null>(null);
+  const authoritativeHistory = useRef<TranscriptTurn[]>([]);
+  const hasLoadedOlder = useRef(false);
   const turnsRef = useRef<TranscriptTurn[]>([]);
   const activeSessionID = useRef<string | null>(null);
   const hasSessionIdentity = useRef(false);
-  const sessionGeneration = useRef(0);
+  const sessionEpoch = useRef(0);
   const pendingRequestID = useRef<string | null>(null);
   const mutationActive = useRef(false);
 
-  const acceptSessionIdentity = useCallback((nextSessionID: string | null) => {
+  const abortLane = useCallback((lane: RequestLane, except?: AbortController) => {
+    const controller = laneControllers.current[lane];
+    if (controller && controller !== except) controller.abort();
+  }, []);
+
+  const beginLane = useCallback((lane: RequestLane, externalSignal?: AbortSignal): RequestHandle => {
+    abortLane(lane);
+    const controller = new AbortController();
+    laneControllers.current[lane] = controller;
+    activeControllers.current.add(controller);
+    const forwardAbort = () => controller.abort();
+    if (externalSignal?.aborted) controller.abort();
+    else externalSignal?.addEventListener("abort", forwardAbort, { once: true });
+    return {
+      controller,
+      signal: controller.signal,
+      finish() {
+        externalSignal?.removeEventListener("abort", forwardAbort);
+        activeControllers.current.delete(controller);
+        if (laneControllers.current[lane] === controller) laneControllers.current[lane] = null;
+      },
+    };
+  }, [abortLane]);
+
+  const acceptSessionIdentity = useCallback((nextSessionID: string | null, currentTranscript?: AbortController): boolean => {
     const changed = hasSessionIdentity.current && activeSessionID.current !== nextSessionID;
     activeSessionID.current = nextSessionID;
     hasSessionIdentity.current = true;
-    if (!changed) return;
+    if (!changed) return false;
 
-    sessionGeneration.current += 1;
-    loadedOlderTurns.current = [];
+    sessionEpoch.current += 1;
+    abortLane("transcript", currentTranscript);
+    abortLane("older");
+    authoritativeHistory.current = [];
+    hasLoadedOlder.current = false;
     unconfirmedLiveTurns.current = [];
-    authoritativeTurnCounts.current = null;
     turnsRef.current = [];
-    setTranscript(null);
+    setStreamBarrierEpoch(null);
+    setPagination(null);
     setTurns([]);
     setLiveTurn(null);
     setScrollOffset(0);
     setLoadingOlder(false);
-  }, []);
+    return true;
+  }, [abortLane]);
 
   const refreshSnapshots = useCallback(async (signal?: AbortSignal): Promise<boolean> => {
     if (!api) {
       setLoading(false);
       return false;
     }
-    const ownedController = signal ? null : new AbortController();
-    const requestSignal = signal ?? ownedController!.signal;
+    const viewRequest = beginLane("view", signal);
+    const transcriptRequest = beginLane("transcript", signal);
     const generation = lifecycleGeneration.current;
     const demandRevision = snapshotDemandRevision.current;
     const startedAtRevision = liveViewRevision.current;
     const requestSerial = ++viewRequestSerial.current;
     const transcriptSerial = ++transcriptRequestSerial.current;
-    if (ownedController) activeControllers.current.add(ownedController);
     try {
-      const settleView = async (): Promise<boolean> => {
+      const settleView = async (): Promise<MayorView | null> => {
         try {
-          const normalizedView = normalizeView(await api.getMayor(requestSignal));
-          if (requestSignal.aborted || generation !== lifecycleGeneration.current || requestSerial !== viewRequestSerial.current) return false;
-          acceptSessionIdentity(normalizedView.session_id ?? null);
+          const normalizedView = normalizeView(await api.getMayor(viewRequest.signal));
+          if (viewRequest.signal.aborted || generation !== lifecycleGeneration.current || requestSerial !== viewRequestSerial.current) return null;
+          acceptSessionIdentity(normalizedView.session_id ?? null, transcriptRequest.controller);
           setView((current) => preserveLiveView(normalizedView, current, startedAtRevision === liveViewRevision.current));
           hasLastGood.current = true;
           setStatusError(null);
           setFailureState(null);
           setStatusStale(false);
           setLoading(false);
-          return true;
+          return normalizedView;
         } catch (cause) {
-          if (requestSignal.aborted || generation !== lifecycleGeneration.current || requestSerial !== viewRequestSerial.current) return false;
+          if (viewRequest.signal.aborted || generation !== lifecycleGeneration.current || requestSerial !== viewRequestSerial.current) return null;
           setStatusError(errorMessage(cause));
           setStatusStale(true);
           if (!hasLastGood.current) setFailureState(classifyFailure(cause));
           setLoading(false);
-          return false;
+          return null;
+        } finally {
+          viewRequest.finish();
         }
       };
 
       const settleTranscript = async (): Promise<boolean> => {
         try {
-          const normalizedTranscript = normalizeTranscript(await api.getMayorTranscript(undefined, requestSignal));
-          await viewLane;
+          const normalizedTranscript = normalizeTranscript(await api.getMayorTranscript(undefined, transcriptRequest.signal));
+          const confirmedView = await viewLane;
           if (
-            requestSignal.aborted
+            transcriptRequest.signal.aborted
             || generation !== lifecycleGeneration.current
             || requestSerial !== viewRequestSerial.current
             || transcriptSerial !== transcriptRequestSerial.current
           ) return false;
-          const reconciliation = reconcileLiveTurns(
-            normalizedTranscript.turns ?? [],
-            unconfirmedLiveTurns.current,
-            authoritativeTurnCounts.current,
-          );
-          unconfirmedLiveTurns.current = reconciliation.remaining;
-          authoritativeTurnCounts.current = reconciliation.snapshotCounts;
-          const merged = mergeTranscriptPages(loadedOlderTurns.current, reconciliation.turns);
-          loadedOlderTurns.current = merged.added;
-          turnsRef.current = merged.turns;
-          setTranscript(normalizedTranscript);
-          setTurns(merged.turns);
+          if (!confirmedView) return false;
+          const responseSessionID = normalizedTranscript.session_id?.trim();
+          if (confirmedView.materialized) {
+            if (!responseSessionID || responseSessionID !== confirmedView.session_id || responseSessionID !== activeSessionID.current) {
+              throw new Error("Mayor transcript belongs to a different session");
+            }
+          } else if (responseSessionID || (normalizedTranscript.turns?.length ?? 0) > 0) {
+            throw new Error("Dormant Mayor transcript unexpectedly names a session");
+          }
+          const merged = mergeAuthoritativeTail(authoritativeHistory.current, normalizedTranscript.turns ?? []);
+          authoritativeHistory.current = merged.turns;
+          unconfirmedLiveTurns.current = reconcileLiveTurns(merged.appended, unconfirmedLiveTurns.current);
+          const visibleTurns = [...merged.turns, ...unconfirmedLiveTurns.current.map(({ turn }) => turn)];
+          turnsRef.current = visibleTurns;
+          if (!hasLoadedOlder.current) {
+            setPagination({ before: normalizedTranscript.before, has_older: normalizedTranscript.has_older });
+          }
+          setTurns(visibleTurns);
           setSnapshotError(null);
           return true;
         } catch (cause) {
           if (
-            requestSignal.aborted
+            transcriptRequest.signal.aborted
             || generation !== lifecycleGeneration.current
             || requestSerial !== viewRequestSerial.current
             || transcriptSerial !== transcriptRequestSerial.current
           ) return false;
           setSnapshotError(errorMessage(cause));
           return false;
+        } finally {
+          transcriptRequest.finish();
         }
       };
 
       const viewLane = settleView();
       const transcriptLane = settleTranscript();
-      const [viewConfirmed, transcriptConfirmed] = await Promise.all([viewLane, transcriptLane]);
-      if (requestSignal.aborted || generation !== lifecycleGeneration.current) return false;
+      const [confirmedView, transcriptConfirmed] = await Promise.all([viewLane, transcriptLane]);
+      if (generation !== lifecycleGeneration.current) return false;
       if (requestSerial !== viewRequestSerial.current || transcriptSerial !== transcriptRequestSerial.current) return false;
 
-      const confirmed = viewConfirmed && transcriptConfirmed;
+      const confirmed = confirmedView !== null && transcriptConfirmed;
       if (confirmed) {
         lastSnapshotConfirmedRevision.current = Math.max(lastSnapshotConfirmedRevision.current, demandRevision);
-        setStreamBarrierGeneration(generation);
+        setStreamBarrierEpoch(sessionEpoch.current);
         if (demandRevision === snapshotDemandRevision.current) setSnapshotStale(false);
       } else {
         setSnapshotStale(true);
       }
       return confirmed;
     } finally {
-      if (ownedController) activeControllers.current.delete(ownedController);
+      viewRequest.finish();
+      transcriptRequest.finish();
     }
-  }, [acceptSessionIdentity, api]);
+  }, [acceptSessionIdentity, api, beginLane]);
 
   const refreshStatus = useCallback(async (signal?: AbortSignal): Promise<boolean> => {
     if (!api) {
       setLoading(false);
       return false;
     }
-    const ownedController = signal ? null : new AbortController();
-    const requestSignal = signal ?? ownedController!.signal;
+    abortLane("transcript");
+    transcriptRequestSerial.current += 1;
+    const viewRequest = beginLane("view", signal);
     const generation = lifecycleGeneration.current;
     const startedAtRevision = liveViewRevision.current;
     const requestSerial = ++viewRequestSerial.current;
-    if (ownedController) activeControllers.current.add(ownedController);
     try {
-      const nextView = normalizeView(await api.getMayor(requestSignal));
-      if (requestSignal.aborted || generation !== lifecycleGeneration.current) return false;
+      const nextView = normalizeView(await api.getMayor(viewRequest.signal));
+      if (viewRequest.signal.aborted || generation !== lifecycleGeneration.current) return false;
       if (requestSerial === viewRequestSerial.current) {
-        acceptSessionIdentity(nextView.session_id ?? null);
+        const sessionChanged = acceptSessionIdentity(nextView.session_id ?? null);
         setView((current) => preserveLiveView(nextView, current, startedAtRevision === liveViewRevision.current));
         hasLastGood.current = true;
         setStatusError(null);
         setStatusStale(false);
         setFailureState(null);
         setLoading(false);
+        if (sessionChanged) {
+          const epoch = sessionEpoch.current;
+          queueMicrotask(() => {
+            if (generation !== lifecycleGeneration.current || epoch !== sessionEpoch.current) return;
+            const baseline = requestRefresh ? requestRefresh(["mayor-snapshots"]) : refreshSnapshots();
+            void baseline.catch((cause) => {
+              if (generation !== lifecycleGeneration.current || epoch !== sessionEpoch.current) return;
+              setSnapshotError(errorMessage(cause));
+              setSnapshotStale(true);
+            });
+          });
+        }
       }
       return true;
     } catch (cause) {
-      if (requestSignal.aborted || generation !== lifecycleGeneration.current) return false;
+      if (viewRequest.signal.aborted || generation !== lifecycleGeneration.current) return false;
       if (requestSerial === viewRequestSerial.current) {
         setStatusError(errorMessage(cause));
         setStatusStale(true);
@@ -314,9 +375,9 @@ export function useMayor({ api, connector = connectMayorEvents, requestRefresh }
       }
       return false;
     } finally {
-      if (ownedController) activeControllers.current.delete(ownedController);
+      viewRequest.finish();
     }
-  }, [acceptSessionIdentity, api]);
+  }, [abortLane, acceptSessionIdentity, api, beginLane, refreshSnapshots, requestRefresh]);
 
   const requestSnapshotRefresh = useCallback(async (): Promise<boolean> => {
     const demandRevision = ++snapshotDemandRevision.current;
@@ -334,13 +395,13 @@ export function useMayor({ api, connector = connectMayorEvents, requestRefresh }
     let active = true;
     const controllers = activeControllers.current;
     const generation = ++lifecycleGeneration.current;
-    loadedOlderTurns.current = [];
+    authoritativeHistory.current = [];
+    hasLoadedOlder.current = false;
     unconfirmedLiveTurns.current = [];
-    authoritativeTurnCounts.current = null;
     turnsRef.current = [];
     activeSessionID.current = null;
     hasSessionIdentity.current = false;
-    sessionGeneration.current += 1;
+    sessionEpoch.current += 1;
     queueMicrotask(() => {
       if (!active || generation !== lifecycleGeneration.current) return;
       void refreshSnapshots();
@@ -348,8 +409,10 @@ export function useMayor({ api, connector = connectMayorEvents, requestRefresh }
     return () => {
       active = false;
       lifecycleGeneration.current += 1;
+      sessionEpoch.current += 1;
       controllers.forEach((controller) => controller.abort());
       controllers.clear();
+      laneControllers.current = { view: null, transcript: null, older: null };
     };
   }, [refreshSnapshots]);
 
@@ -365,11 +428,24 @@ export function useMayor({ api, connector = connectMayorEvents, requestRefresh }
     setStreamStale(true);
   }, []);
 
-  const onEvent = useCallback((event: MayorEvent) => {
+  const onEvent = useCallback((event: MayorEvent, expectedEpoch: number, expectedSessionID: string) => {
     if (event.kind === "stale") {
       markStreamStale();
       return;
     }
+    if (event.kind === "invalidate") {
+      setSnapshotStale(true);
+      const startedAtRevision = streamRevision.current;
+      void requestSnapshotRefresh().then((confirmed) => {
+        if (confirmed && startedAtRevision === streamRevision.current) setStreamStale(false);
+      });
+      return;
+    }
+    if (
+      expectedEpoch !== sessionEpoch.current
+      || expectedSessionID !== activeSessionID.current
+      || event.session_id?.trim() !== expectedSessionID
+    ) return;
     if (event.kind === "turn" && event.turn) {
       unconfirmedLiveTurns.current.push({ turn: event.turn });
       turnsRef.current = [...turnsRef.current, event.turn];
@@ -387,49 +463,55 @@ export function useMayor({ api, connector = connectMayorEvents, requestRefresh }
       setView((current) => current ? { ...current, pending: event.pending } : current);
       return;
     }
-    if (event.kind === "invalidate") {
-      setSnapshotStale(true);
-      const startedAtRevision = streamRevision.current;
-      void requestSnapshotRefresh().then((confirmed) => {
-        if (confirmed && startedAtRevision === streamRevision.current) setStreamStale(false);
-      });
-    }
   }, [markStreamStale, requestSnapshotRefresh]);
 
   useEffect(() => {
-    if (!api || streamBarrierGeneration !== lifecycleGeneration.current) return;
+    const expectedSessionID = activeSessionID.current;
+    const expectedEpoch = sessionEpoch.current;
+    if (!api || !expectedSessionID || streamBarrierEpoch !== expectedEpoch) return;
+    const isCurrentEpoch = () => expectedEpoch === sessionEpoch.current && expectedSessionID === activeSessionID.current;
     return connector({
-      onEvent,
-      onStale: markStreamStale,
+      onEvent: (event) => onEvent(event, expectedEpoch, expectedSessionID),
+      onStale: () => { if (isCurrentEpoch()) markStreamStale(); },
       onReconnect: async () => {
+        if (!isCurrentEpoch()) return;
         const startedAtRevision = streamRevision.current;
         const confirmed = await requestSnapshotRefresh();
-        if (confirmed && startedAtRevision === streamRevision.current) setStreamStale(false);
+        if (isCurrentEpoch() && confirmed && startedAtRevision === streamRevision.current) setStreamStale(false);
       },
     });
-  }, [api, connector, markStreamStale, onEvent, requestSnapshotRefresh, streamBarrierGeneration]);
+  }, [api, connector, markStreamStale, onEvent, requestSnapshotRefresh, streamBarrierEpoch]);
 
   const loadOlder = useCallback(async () => {
-    if (!api || loadingOlder || !transcript?.has_older || !transcript.before) return;
+    if (!api || loadingOlder || !pagination?.has_older || !pagination.before) return;
     setLoadingOlder(true);
     const generation = lifecycleGeneration.current;
-    const pageSessionGeneration = sessionGeneration.current;
+    const pageEpoch = sessionEpoch.current;
+    const pageSessionID = activeSessionID.current;
+    const before = pagination.before;
+    const request = beginLane("older");
     try {
-      const older = normalizeTranscript(await api.getMayorTranscript(transcript.before));
-      if (generation !== lifecycleGeneration.current || pageSessionGeneration !== sessionGeneration.current) return;
+      const older = normalizeTranscript(await api.getMayorTranscript(before, request.signal));
+      if (request.signal.aborted || generation !== lifecycleGeneration.current || pageEpoch !== sessionEpoch.current) return;
+      if (!pageSessionID || older.session_id?.trim() !== pageSessionID || activeSessionID.current !== pageSessionID) {
+        throw new Error("Older Mayor transcript belongs to a different session");
+      }
       const olderTurns = older.turns ?? [];
-      const merged = mergeTranscriptPages(olderTurns, turnsRef.current);
-      loadedOlderTurns.current = [...merged.added, ...loadedOlderTurns.current];
-      turnsRef.current = merged.turns;
-      setTurns(merged.turns);
-      setTranscript((current) => current ? { ...current, has_older: older.has_older, before: older.before, total: Math.max(current.total, older.total), problems: [...(older.problems ?? []), ...(current.problems ?? [])] } : older);
+      const merged = mergeTranscriptPages(olderTurns, authoritativeHistory.current);
+      authoritativeHistory.current = merged.turns;
+      const visibleTurns = [...merged.turns, ...unconfirmedLiveTurns.current.map(({ turn }) => turn)];
+      turnsRef.current = visibleTurns;
+      setTurns(visibleTurns);
+      hasLoadedOlder.current = true;
+      setPagination({ before: older.before, has_older: older.has_older });
     } catch (cause) {
-      if (generation !== lifecycleGeneration.current || pageSessionGeneration !== sessionGeneration.current) return;
+      if (request.signal.aborted || generation !== lifecycleGeneration.current || pageEpoch !== sessionEpoch.current) return;
       setMutationError(errorMessage(cause));
     } finally {
-      if (generation === lifecycleGeneration.current && pageSessionGeneration === sessionGeneration.current) setLoadingOlder(false);
+      request.finish();
+      if (generation === lifecycleGeneration.current && pageEpoch === sessionEpoch.current) setLoadingOlder(false);
     }
-  }, [api, loadingOlder, transcript]);
+  }, [api, beginLane, loadingOlder, pagination]);
 
   const send = useCallback(async () => {
     if (!api || mutationActive.current || !canSendMayor(view, composerDraft)) return;
@@ -475,7 +557,7 @@ export function useMayor({ api, connector = connectMayorEvents, requestRefresh }
     view, turns, loading, stale: streamStale || snapshotStale || statusStale || Boolean(view?.stale), error, failureState, liveTurn,
     composerDraft, setComposerDraft, pendingDraft, setPendingDraft, receipt, mutation, mutationError,
     scrollOffset, setScrollOffset, refresh, refreshStatus, refreshSnapshots, loadOlder, send, respond, canSend,
-    hasOlder: Boolean(transcript?.has_older), loadingOlder,
+    hasOlder: Boolean(pagination?.has_older), loadingOlder,
   };
 }
 
@@ -488,7 +570,7 @@ function normalizeTranscript(transcript: TranscriptPage): TranscriptPage {
 }
 
 function preserveLiveView(next: MayorView, current: MayorView | null, snapshotIsCurrent: boolean): MayorView {
-  if (snapshotIsCurrent || !current) return next;
+  if (snapshotIsCurrent || !current || next.session_id !== current.session_id) return next;
   return {
     ...next,
     activity: current.activity,
@@ -499,36 +581,49 @@ function preserveLiveView(next: MayorView, current: MayorView | null, snapshotIs
 
 function isMayorEvent(value: unknown): value is MayorEvent {
   if (value === null || typeof value !== "object" || !("kind" in value) || !("resources" in value)) return false;
-  const event = value as { kind?: unknown; resources?: unknown };
-  return ["turn", "activity", "pending", "invalidate", "stale"].includes(String(event.kind))
-    && (event.resources === null || (Array.isArray(event.resources) && event.resources.every((resource) => typeof resource === "string")));
+  const event = value as { kind?: unknown; resources?: unknown; session_id?: unknown };
+  const kind = String(event.kind);
+  if (!["turn", "activity", "pending", "invalidate", "stale"].includes(kind)) return false;
+  if (!(event.resources === null || (Array.isArray(event.resources) && event.resources.every((resource) => typeof resource === "string")))) return false;
+  if (kind === "turn" || kind === "activity" || kind === "pending") {
+    return typeof event.session_id === "string" && event.session_id.trim() !== "";
+  }
+  return event.session_id === undefined || typeof event.session_id === "string";
 }
 
-function reconcileLiveTurns(
-  snapshot: TranscriptTurn[],
-  buffered: LiveTurnRecord[],
-  previousSnapshotCounts: Map<string, number> | null,
-): { turns: TranscriptTurn[]; remaining: LiveTurnRecord[]; snapshotCounts: Map<string, number> } {
-  const snapshotCounts = new Map<string, number>();
-  snapshot.forEach((turn) => {
-    const key = turnKey(turn);
-    snapshotCounts.set(key, (snapshotCounts.get(key) ?? 0) + 1);
-  });
+function reconcileLiveTurns(appended: TranscriptTurn[], buffered: LiveTurnRecord[]): LiveTurnRecord[] {
   const confirmations = new Map<string, number>();
-  if (previousSnapshotCounts !== null) {
-    snapshotCounts.forEach((count, key) => {
-      const growth = count - (previousSnapshotCounts.get(key) ?? 0);
-      if (growth > 0) confirmations.set(key, growth);
-    });
-  }
-  const remaining = buffered.filter(({ turn }) => {
+  appended.forEach((turn) => {
+    const key = turnKey(turn);
+    confirmations.set(key, (confirmations.get(key) ?? 0) + 1);
+  });
+  return buffered.filter(({ turn }) => {
     const key = turnKey(turn);
     const count = confirmations.get(key) ?? 0;
     if (count === 0) return true;
     confirmations.set(key, count - 1);
     return false;
   });
-  return { turns: [...snapshot, ...remaining.map(({ turn }) => turn)], remaining, snapshotCounts };
+}
+
+function mergeAuthoritativeTail(
+  history: TranscriptTurn[],
+  tail: TranscriptTurn[],
+): { turns: TranscriptTurn[]; appended: TranscriptTurn[] } {
+  let overlap = Math.min(history.length, tail.length);
+  while (overlap > 0) {
+    let matches = true;
+    for (let index = 0; index < overlap; index += 1) {
+      if (turnKey(history[history.length - overlap + index]) !== turnKey(tail[index])) {
+        matches = false;
+        break;
+      }
+    }
+    if (matches) break;
+    overlap -= 1;
+  }
+  const appended = tail.slice(overlap);
+  return { appended, turns: [...history, ...appended] };
 }
 
 function mergeTranscriptPages(
