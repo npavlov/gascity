@@ -52,6 +52,9 @@ func NewApp(cfg Config, deps Dependencies) (*App, error) {
 		if err != nil {
 			return nil, fmt.Errorf("control center: create Supervisor ping: %w", err)
 		}
+		if supervisorPing == nil {
+			return nil, fmt.Errorf("control center: Supervisor ping factory returned nil")
+		}
 	}
 	staticHandler, err := newStaticHandler(deps.StaticFS)
 	if err != nil {

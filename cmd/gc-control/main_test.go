@@ -148,6 +148,38 @@ func TestRunBuildsSupervisorPingFromNormalizedURL(t *testing.T) {
 	}
 }
 
+func TestRunWithDependenciesRejectsMissingRuntimeEdges(t *testing.T) {
+	args := []string{
+		"--bind", "127.0.0.1:0",
+		"--supervisor-url", "http://127.0.0.1:9011",
+		"--city", "taxdome",
+		"--gc", "/custom/bin/gc",
+		"--pack", "gascity",
+		"--mayor-identity", "taxdome/lead.operator",
+		"--assistant-template", "taxdome/workers.convoy_assistant",
+	}
+	validWebFS := func() (fs.FS, error) {
+		return fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte("<!doctype html>")}}, nil
+	}
+	validPingFactory := func(string, *http.Client) (func(context.Context) error, error) {
+		return func(context.Context) error { return nil }, nil
+	}
+	for _, tt := range []struct {
+		name string
+		deps runDependencies
+	}{
+		{name: "missing web filesystem", deps: runDependencies{newSupervisorPing: validPingFactory}},
+		{name: "missing Supervisor factory", deps: runDependencies{webFS: validWebFS}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			err := runWithDependencies(context.Background(), args, tt.deps)
+			if err == nil || !strings.Contains(err.Error(), "runtime dependencies are required") {
+				t.Fatalf("runWithDependencies error = %v", err)
+			}
+		})
+	}
+}
+
 func TestMakefileKeepsControlCenterBuildOrderAndOutput(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("..", "..", "Makefile"))
 	if err != nil {

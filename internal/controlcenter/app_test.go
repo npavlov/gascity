@@ -182,3 +182,40 @@ func TestNewAppRejectsMissingStaticBundle(t *testing.T) {
 		t.Fatal("NewApp accepted a static bundle without index.html")
 	}
 }
+
+func TestNewAppRejectsConflictingSupervisorDependencies(t *testing.T) {
+	_, err := NewApp(validTestConfig(), Dependencies{
+		StaticFS:       staticTestFS(),
+		SupervisorPing: func(context.Context) error { return nil },
+		SupervisorPingFactory: func(string) (func(context.Context) error, error) {
+			return func(context.Context) error { return nil }, nil
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "either SupervisorPing or SupervisorPingFactory") {
+		t.Fatalf("NewApp conflicting Supervisor dependencies error = %v", err)
+	}
+}
+
+func TestNewAppWrapsSupervisorPingFactoryError(t *testing.T) {
+	_, err := NewApp(validTestConfig(), Dependencies{
+		StaticFS: staticTestFS(),
+		SupervisorPingFactory: func(string) (func(context.Context) error, error) {
+			return nil, errors.New("factory unavailable")
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "create Supervisor ping: factory unavailable") {
+		t.Fatalf("NewApp Supervisor factory error = %v", err)
+	}
+}
+
+func TestNewAppRejectsNilSupervisorPingFromFactory(t *testing.T) {
+	_, err := NewApp(validTestConfig(), Dependencies{
+		StaticFS: staticTestFS(),
+		SupervisorPingFactory: func(string) (func(context.Context) error, error) {
+			return nil, nil
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "Supervisor ping factory returned nil") {
+		t.Fatalf("NewApp nil Supervisor ping error = %v", err)
+	}
+}
